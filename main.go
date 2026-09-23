@@ -14,7 +14,7 @@ func main() {
 	ok := true
 
 	start := time.Now()
-	body, err := fetchSnapshot(ctx, snapshotURL)
+	body, err := fetchSnapshot(ctx, dkClient, snapshotURL)
 	if err != nil {
 		slog.Error("snapshot", "err", err, "took", time.Since(start))
 		ok = false
@@ -23,7 +23,7 @@ func main() {
 	}
 
 	start = time.Now()
-	conn, ack, err := dialAndSubscribe(ctx, nflSubscription)
+	conn, ack, err := dialAndSubscribe(ctx, dkClient, socketURL, nflSubscription)
 	if err != nil {
 		slog.Error("socket", "err", err, "took", time.Since(start))
 		ok = false

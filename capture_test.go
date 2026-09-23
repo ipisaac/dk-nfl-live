@@ -34,7 +34,7 @@ func TestCapture(t *testing.T) {
 	defer cancel()
 
 	url := leaguesURL + league
-	body, err := fetchSnapshot(ctx, url)
+	body, err := fetchSnapshot(ctx, dkClient, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ type frameLine struct {
 
 func captureFrames(ctx context.Context, q subscriptionQuery, out *jsonl) {
 	for sub := 1; ctx.Err() == nil; sub++ {
-		conn, ack, err := dialAndSubscribe(ctx, q)
+		conn, ack, err := dialAndSubscribe(ctx, dkClient, socketURL, q)
 		if err != nil {
 			out.write(frameLine{Sub: sub, Recv: time.Now(), Err: err.Error()})
 			sleepCtx(ctx, time.Second)
@@ -105,7 +105,7 @@ func captureSnapshots(ctx context.Context, t *testing.T, url, dir string, out *j
 	seen := map[string]bool{}
 	for {
 		start := time.Now()
-		body, err := fetchSnapshot(ctx, url)
+		body, err := fetchSnapshot(ctx, dkClient, url)
 		line := snapshotLine{Start: start, End: time.Now()}
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
@@ -165,13 +165,6 @@ func writeGzip(path string, b []byte) error {
 		return err
 	}
 	return f.Close()
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) {
-	select {
-	case <-ctx.Done():
-	case <-time.After(d):
-	}
 }
 
 func envOr(key, def string) string {

@@ -157,7 +157,16 @@ var errMissingID = errors.New("entity without id")
 
 // ApplySnapshot replaces the board with a league snapshot and returns the IDs of games whose rows
 // changed or went away.
-func (b *Board) ApplySnapshot(body []byte, at time.Time) (changed []string, err error) {
+func (b *Board) ApplySnapshot(body []byte, at time.Time) ([]string, error) {
+	next, err := b.parseSnapshot(body)
+	if err != nil {
+		return nil, err
+	}
+	return b.replace(next, at), nil
+}
+
+// parseSnapshot builds and validates a board from a league snapshot, leaving b untouched.
+func (b *Board) parseSnapshot(body []byte) (next *Board, err error) {
 	defer recoverTo(&err)
 	var s struct {
 		Events     []event     `json:"events"`
@@ -167,7 +176,7 @@ func (b *Board) ApplySnapshot(body []byte, at time.Time) (changed []string, err 
 	if err := json.Unmarshal(body, &s); err != nil {
 		return nil, fmt.Errorf("snapshot: %w", err)
 	}
-	next := NewBoard(b.subcategory)
+	next = NewBoard(b.subcategory)
 	for _, e := range s.Events {
 		next.events[e.ID] = e
 	}
@@ -180,33 +189,50 @@ func (b *Board) ApplySnapshot(body []byte, at time.Time) (changed []string, err 
 	if hasKey(next.events, "") || hasKey(next.markets, "") || hasKey(next.selections, "") {
 		return nil, fmt.Errorf("snapshot: %w", errMissingID)
 	}
-	changed = next.rebuild(b.rows, at)
-	if len(next.rows) == 0 {
+	if next.rebuild(nil, time.Time{}); len(next.rows) == 0 {
 		return nil, errors.New("snapshot: no games")
 	}
+	return next, nil
+}
+
+// replace swaps in next and returns the IDs of games whose rows changed or went away.
+func (b *Board) replace(next *Board, at time.Time) []string {
+	changed := next.rebuild(b.rows, at)
 	*b = *next
-	return changed, nil
+	return changed
 }
 
 // ApplyUpdate applies one socket message's `data`. It returns the IDs of games whose rows changed or
 // went away, and the IDs of `change` parts it skipped because it doesn't hold them; the board then
 // needs a resync.
 func (b *Board) ApplyUpdate(data []byte, at time.Time) (changed, unknown []string, err error) {
-	defer recoverTo(&err)
+	u, err := decodeUpdate(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b.applyUpdate(u, at)
+}
+
+func decodeUpdate(data []byte) (*updateData, error) {
 	var u updateData
 	if err := json.Unmarshal(data, &u); err != nil {
-		return nil, nil, fmt.Errorf("update: %w", err)
+		return nil, fmt.Errorf("update: %w", err)
 	}
 	if d := u.Data; d == nil || d.Add == nil || d.Change == nil || d.Remove == nil {
-		return nil, nil, fmt.Errorf("update: %w", errEnvelope)
+		return nil, fmt.Errorf("update: %w", errEnvelope)
 	}
+	return &u, nil
+}
+
+func (b *Board) applyUpdate(u *updateData, at time.Time) (changed, unknown []string, err error) {
+	defer recoverTo(&err)
 	next := &Board{
 		subcategory: b.subcategory,
 		events:      maps.Clone(b.events),
 		markets:     maps.Clone(b.markets),
 		selections:  maps.Clone(b.selections),
 	}
-	if unknown, err = next.apply(&u); err != nil {
+	if unknown, err = next.apply(u); err != nil {
 		return nil, nil, fmt.Errorf("update: %w", err)
 	}
 	changed = next.rebuild(b.rows, at)
@@ -311,13 +337,12 @@ func mergeInto[T any](m map[string]T, id string, c T, keys map[string]json.RawMe
 	return true
 }
 
-// merge copies the fields whose JSON keys were sent over e: DK's `change` is a top-level merge of
+// merge copies the fields whose JSON keys are in keys over e: DK's `change` is a top-level merge of
 // absolute values.
-func merge[T any](e *T, c T, keys map[string]json.RawMessage) {
+func merge[T, V any](e *T, c T, keys map[string]V) {
 	dst, src := reflect.ValueOf(e).Elem(), reflect.ValueOf(c)
 	for i := range src.NumField() {
-		name, _, _ := strings.Cut(src.Type().Field(i).Tag.Get("json"), ",")
-		if hasKey(keys, name) {
+		if hasKey(keys, jsonName(src.Type().Field(i))) {
 			dst.Field(i).Set(src.Field(i))
 		}
 	}

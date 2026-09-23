@@ -145,14 +145,16 @@ Flat layout, all `package main`.
   the values frames set, each field stamped with the receive time of the frame that last set it.
   - A `change` merges its fields into the entry, an `add` replaces the entry with the whole object, and
     a `remove` replaces it with a tombstone. `replacedSelectionId` moves the old ID's fields to the new
-    ID and leaves a tombstone on the old one.
+    ID and leaves a tombstone on the old one; an `add` that moves a held selection then merges only the
+    fields it sent, as the board does, so inherited fields keep their times.
   - Times are per field because `change` is partial: an unrelated later update must neither erase an
     earlier price nor make it look newer than a rejected-frame cutoff.
 
   A reconnect starts empty:
   a dead subscription's evidence is never used, because a newer update may have been missed after it.
-  - Entries don't expire with time; they leave only by the rules below, or when their event leaves
-    the board. `ponytail:` memory is about one entry per line move per live game.
+  - Entries don't expire with time; they leave only by the rules below or with their subscription.
+    `ponytail:` memory is about one entry per line move per game per subscription; prune entries
+    whose event left the board if a subscription ever lives long enough for that to matter.
 - **Sync state.** The board is either synced (it passed the checks below, which assume `snapshotLag`
   holds; there is no proof) or needs a resync from a moment `resyncFrom`. These set it:
   - socket loss: needs resync until the next ack;
@@ -171,7 +173,11 @@ Flat layout, all `package main`.
     snapshot cut before `resyncFrom` keeps them. It may already hold the rejected frame's values, but
     nothing shows it does, so keeping the evidence is the conservative choice; the board stays
     unsynced until a snapshot cut at or after `resyncFrom` drops them.
-  - **Content check**: every remaining field and tombstone received before the cut matches the snapshot. A miss has
+  - **Content check**: every remaining field and tombstone received before the cut matches the snapshot.
+    Values are compared as the board reads them, since DK spells some differently in frames and
+    snapshots: a missing `main` is true, a missing `isSuspended` is false, `tags` count only for
+    `MainPointLine`, and times compare in UTC. Replaying every captured frame and then committing
+    the later capture gives zero misses in all three leagues. A miss has
     two possible causes we can't tell apart: the snapshot is older than `snapshotLag` allows, or it
     holds a newer value whose frame hasn't reached us yet. Either way: count it, stay unsynced, and
     let the next poll retry.
@@ -180,7 +186,10 @@ Flat layout, all `package main`.
     subscription starts with no evidence, and its post-ack snapshot sets the board.
   - **Overlay**: apply every remaining field and tombstone to the new board. A snapshot never undoes a value the
     current subscription delivered and nothing has superseded. Overlaying a value the snapshot
-    already holds is a no-op.
+    already holds is a no-op. An entity the snapshot lacks is rebuilt from its remaining fields plus
+    the ones that never change under its ID (a selection's market and outcome, a market's event and
+    type, an event's participants). A field whose evidence was dropped stays empty: no price, and a
+    market with no suspension evidence shows as suspended.
   - Why overlaying is safe: entries are the latest values of one subscription's ordered stream. The
     only possible regression is an update the snapshot already has and the socket hasn't delivered
     yet; it arrives on the same subscription and overwrites that field. This relies on DK delivering a
@@ -245,7 +254,8 @@ reconnect, the 60 s resync, polling, an unknown ID, a rejected frame.
 - `Request(reason)` never blocks and coalesces into a single pending flag.
 - At most one request is in flight.
 - Request starts are at least 2 s apart. After a failure the spacing grows with full-jitter backoff
-  (2 s → 30 s cap) and resets on the next success.
+  (2 s → 30 s cap) and resets on the next success, or on a subscribe ack: the network is back, and
+  a long backoff would hold the board below `live` after an outage.
 - Polling is the scheduler re-requesting after each result while status isn't `live`: the socket is
   down, or the board needs a resync.
 
@@ -358,9 +368,8 @@ The `/healthz` body carries:
     - Review fixes: a replacement `add` inherits omitted fields; merge follows the keys sent, so an
       explicit `null` clears a field; a frame without the full envelope is rejected. Each fix's
       test fails when the fix is reverted.
-    - `-race` needs cgo, and the home PC has no C compiler; tests ran without it. Install one
-      (e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT`) before step 5's concurrency tests.
-- [ ] 4. **Feed.** Write the rest of `dk.go` + `dk_test.go`.
+    - `-race` needs cgo; WinLibs gcc is installed (2026-09-23), and `go test -race ./...` passes.
+- [x] 4. **Feed.** Write the rest of `dk.go` + `dk_test.go`.
   - **Two kinds of test.** Timing tests run under `testing/synctest` with in-memory connections: the
     snapshot and socket clients get a `Transport.DialContext` that returns one end of a `net.Pipe`,
     served in-process by the fake handlers. Real sockets would stop fake time from advancing. A few
@@ -383,7 +392,8 @@ The `/healthz` body carries:
     → F's field is kept.
   - Partial merge: F sets a selection's price at t=0, G changes only another field of it at t=2, a
     frame rejected at t=1 → the price keeps F's time, and a snapshot cut after t=1 drops the price but
-    keeps G's field.
+    keeps G's field. The same with G an `add` moving the selection to a new ID. And with the
+    selection missing from the snapshot → it is rebuilt with G's field and no price.
   - Lost update: frame F on the old subscription, a newer G missed during the disconnect, the recovery
     snapshot holds G → the board shows G.
   - Pre-ack snapshot: the fake serves data cut before the ack → it commits, status stays `polling`;
@@ -394,6 +404,19 @@ The `/healthz` body carries:
   - Scheduler: a burst from every trigger at once gives one request in flight, starts ≥ 2 s apart,
     and backoff after failures.
   - Freshness: a synced, healthy socket with no frames for 5 min stays `live`.
+  - **Result (2026-09-23):** `dk.go` + `dk_test.go`; `go test -race ./...` passes, five times over.
+    - The sync rules are handler methods (`onAck`, `onFrame`, `onSnapshot`, …) that the apply
+      goroutine calls, so the ordering tests drive them directly with explicit times. The goroutine
+      tests run under synctest over `net.Pipe` (HTTP and the websocket both), and
+      `TestRealSockets` covers TLS and the handshake over `httptest`.
+    - Covered: every scenario above; plus a half-open socket (pings unanswered → reconnect at
+      15 + 5 s), a removed market a stale snapshot brings back, drift, and replaying the real
+      captures with evidence (zero misses).
+    - Each rule's test fails when the rule is removed (overlay, dropping superseded evidence,
+      evidence reset on ack, lost-frame, drift, the cut check, normalisation, polling while not
+      `live`, resync on rejection, pongs counting as heard, the ack ending backoff).
+    - Smoke run against DK from the home PC: `live` 8 s after the ack (the `snapshotLag` wait),
+      32 games, zero misses.
 - [ ] 5. **Server and page.** Write `sse.go`, `main.go` and `web/`.
   - Handoff: publish concurrently with many subscribes under `-race`. Every client's first message is
     `board`, and applying its patches in order gives the final board.
@@ -415,7 +438,8 @@ The `/healthz` body carries:
    was ~40 ms).
 4. **Chaos**:
    - Network off for 60 s: the stale banner shows over the last-good odds, never a blank board.
-   - Network back on: live again within 15 s.
+   - Network back on: live again within 25 s (socket backoff ≤ 15 s, then a snapshot cut after
+     the ack). Prices move as soon as the socket is back.
    - Process killed: the page recovers on its own.
 5. The tunnel URL works on a phone on cellular.
 6. 1 h soak: no reconnect loop, memory flat.
