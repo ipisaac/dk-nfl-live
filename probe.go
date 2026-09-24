@@ -56,9 +56,6 @@ func init() {
 		run  func(context.Context, *probeResult) error
 	}{
 		{"D uTLS Node bytes, 2 writes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, false) }},
-		{"N Node 22.20 fetch", probeNode},
-		{"C uTLS Node bytes, 1 write", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, true) }},
-		{"D uTLS Node bytes, 2 writes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, false) }},
 		{"A current client", probeCurrent},
 	}
 	for i, p := range probes {
@@ -139,7 +136,7 @@ func probeRaw(ctx context.Context, r *probeResult, coalesce bool) error {
 	if coalesce {
 		conn = held
 	}
-	uc := utls.UClient(conn,&utls.Config{ServerName: probeHost}, utls.HelloCustom)
+	uc := utls.UClient(conn, &utls.Config{ServerName: probeHost}, utls.HelloCustom)
 	b, err := hex.DecodeString(strings.TrimSpace(nodeHelloHex))
 	if err != nil {
 		return err

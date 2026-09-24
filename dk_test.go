@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +24,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	utls "github.com/refraction-networking/utls"
 )
 
 func TestMain(m *testing.M) {
@@ -946,5 +950,32 @@ func TestRealSockets(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestFetchSnapshotGzip(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	zw.Write([]byte(`{"events":[]}`))
+	zw.Close()
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "br") {
+			t.Error("request doesn't offer br")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Encoding": {"gzip"}}, Body: io.NopCloser(&gz)}, nil
+	})}
+	body, err := fetchSnapshot(context.Background(), client, "http://dk/snapshot")
+	if err != nil || string(body) != `{"events":[]}` {
+		t.Fatalf("got %q, %v", body, err)
+	}
+}
+
+func TestNodeHelloParses(t *testing.T) {
+	if _, err := (&utls.Fingerprinter{AllowBluntMimicry: true}).FingerprintClientHello(nodeHello); err != nil {
+		t.Fatal(err)
 	}
 }

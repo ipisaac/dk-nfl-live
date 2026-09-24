@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,13 +50,7 @@ const (
 	redialGrace     = time.Second
 )
 
-// dkClient speaks HTTP/1.1 only: from datacenter IPs (Render) Akamai 403s Go's HTTP/2 snapshot request.
-var dkClient = func() *http.Client {
-	http1 := new(http.Protocols)
-	http1.SetHTTP1(true)
-	// Not a DefaultTransport clone: that one still offers h2 in ALPN and gets h2 frames back.
-	return &http.Client{Timeout: netTimeout, Transport: &http.Transport{Protocols: http1}}
-}()
+var dkClient = &http.Client{Timeout: netTimeout, Transport: &http.Transport{DialTLSContext: dialNodeTLS}}
 
 // subscriptionQuery is one of a snapshot's subscriptionPartials.
 type subscriptionQuery struct {
@@ -77,18 +72,31 @@ func fetchSnapshot(ctx context.Context, client *http.Client, url string) ([]byte
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Language", "en-CA,en;q=0.9") // Akamai 403s without it
 	req.Header.Set("Origin", dkOrigin)
 	req.Header.Set("Referer", dkOrigin+"/")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Connection", "keep-alive") // Akamai 403s HTTP/1.1 without it
+	// Akamai 403s a Chrome-like client that doesn't offer br; DK still answers gzip.
+	req.Header.Set("Accept-Encoding", "br, gzip, deflate")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSnapshotSize+1))
+	var r io.Reader = resp.Body
+	switch enc := resp.Header.Get("Content-Encoding"); enc {
+	case "":
+	case "gzip":
+		if r, err = gzip.NewReader(resp.Body); err != nil {
+			return nil, fmt.Errorf("snapshot: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("snapshot: unsupported Content-Encoding %q (status %d)", enc, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(r, maxSnapshotSize+1))
 	if err != nil {
 		return nil, err
 	}
