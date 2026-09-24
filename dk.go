@@ -187,7 +187,7 @@ func dialAndSubscribe(ctx context.Context, client *http.Client, url string, q su
 	}
 }
 
-// Status is what the page shows about freshness; see PROJECT_PLAN.md "Freshness".
+// Status is what the page shows about freshness; see docs/sync.md "Freshness".
 type Status struct {
 	State      string    `json:"state"` // connecting, live, polling, stale
 	StaleSince time.Time `json:"staleSince,omitzero"`
@@ -248,7 +248,7 @@ type (
 var errForcedReconnect = errors.New("forced reconnect")
 
 // Feed keeps a Board in sync with DK. One apply goroutine (Run) owns everything below `in` and calls
-// OnPatch and OnStatus; see PROJECT_PLAN.md "Ordering and consistency".
+// OnPatch and OnStatus; see docs/sync.md "Ordering and consistency".
 type Feed struct {
 	snapshotURL, socketURL string
 	client                 *http.Client
@@ -426,7 +426,7 @@ func (f *Feed) needResync(from time.Time) {
 	f.request()
 }
 
-// onSnapshot commits a snapshot requested at start; see PROJECT_PLAN.md "Snapshot commit".
+// onSnapshot commits a snapshot requested at start; see docs/sync.md "Snapshot commit".
 func (f *Feed) onSnapshot(body []byte, err error, start, now time.Time) error {
 	f.h.SnapshotAt = now
 	var next *Board

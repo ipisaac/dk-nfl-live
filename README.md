@@ -34,6 +34,19 @@ go test -race ./...
 `-race` needs cgo (gcc on Windows); without it, run `go test ./...`. Tests use captured DK payloads
 in `testdata/` and never contact DK.
 
+## Adding a league, sport or sportsbook
+
+The project ships a Claude Code skill, [`extend-board`](.claude/skills/extend-board/SKILL.md). In
+Claude Code, run `/extend-board` or ask for the change directly (e.g. "add the CFL"). The skill
+loads automatically for these requests. It covers:
+
+- which code is DK- or NFL-specific and which is generic (`Row`/`Status` → `Hub` → page),
+- capturing real DK payloads into `testdata/` before writing any code,
+- step-by-step recipes for **another league**, **a new sport** (three-way markets, events without
+  home/away) and **a second sportsbook**, each with the invariants from `AGENTS.md` it must keep.
+
+Without Claude Code, read the same file as a checklist.
+
 ## How it works
 
 ```

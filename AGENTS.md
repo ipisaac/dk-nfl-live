@@ -9,7 +9,7 @@ It updates itself as lines move and survives DK being down or returning anything
 - Preserve a usable board through DK failures.
 
 ## Stack
-- **Go**, a single binary, stdlib first. Only add a dependency with reasons in PROJECT_PLAN.md.
+- **Go**, a single binary, stdlib first. Only add a dependency with its reason in README's "Why this approach".
 - **Frontend**: plain HTML/JS via `//go:embed`. No framework, no build step.
 - **State**: in memory only. There is no database.
 - **Hosting**: Render Free (Ohio), Docker. DK blocks Fly.io's IPs.
@@ -30,7 +30,7 @@ It updates itself as lines move and survives DK being down or returning anything
 - A snapshot never undoes a value the current subscription delivered, unless a rejected frame may
   have superseded it. Subscribe before fetching; overlay the current subscription's evidence on every
   snapshot, never an older subscription's.
-- Before changing feed/sync logic, read PROJECT_PLAN.md's “Ordering and consistency” and “Freshness” rules. `live` requires both a healthy socket and a synced board.
+- Before changing feed/sync logic, read `docs/sync.md`. `live` requires both a healthy socket and a synced board.
 
 ### Robustness
 - Every network call has a timeout.
@@ -53,7 +53,6 @@ It updates itself as lines move and survives DK being down or returning anything
   sockets or sleeps. Real-socket tests are separate integration tests with no timing assertions.
 - Probe from the affected host before claiming DK is unrecheable.
 - Only the user performs account logins, billing, account creation, and pushing to git hosts.
-- Keep PROJECT_PLAN.md's build-order checkboxes current.
 - Keep comments minimal and purposeful. Do not add comments that restate what the code does.
 - Prefer self-explanatory code, clear variable names, and small functions over comments.
 

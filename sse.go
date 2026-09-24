@@ -17,7 +17,7 @@ const (
 )
 
 // Hub fans board changes out to SSE clients. Rows and clients share one mutex, so a new client's
-// board and the patches after it can't miss or repeat a change; see PROJECT_PLAN.md "Fan-out".
+// board and the patches after it can't miss or repeat a change; see docs/sync.md "Fan-out".
 type Hub struct {
 	Delay func() float64 // p50 ms from DK creating a change to it leaving us, for the status line
 
