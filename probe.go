@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,7 +36,7 @@ const nodeRequest = "GET /api/sportscontent/dkcaon/v1/leagues/88808 HTTP/1.1\r\n
 	"Origin: https://sportsbook.draftkings.com\r\n" +
 	"Referer: https://sportsbook.draftkings.com/\r\n" +
 	"sec-fetch-mode: cors\r\n" +
-	"accept-encoding: gzip, deflate\r\n\r\n"
+	"accept-encoding: br, gzip, deflate\r\n\r\n"
 
 type probeResult struct {
 	status, bytes int
@@ -45,8 +44,9 @@ type probeResult struct {
 	remote, alpn  string
 }
 
-// Runs in init so the feed's snapshot requests can't overlap the probes. Tests whether offering br
-// (as Node does over HTTPS) is what Akamai wants, with stdlib TLS and with Node's hello.
+// Runs in init so the feed's snapshot requests can't overlap the probes. Stdlib TLS with br got 403,
+// so this sends Node's exact hello and HTTPS bytes, split over two TCP writes (as uTLS does) and
+// coalesced into one (as Node does).
 func init() {
 	if testing.Testing() {
 		return
@@ -55,10 +55,10 @@ func init() {
 		name string
 		run  func(context.Context, *probeResult) error
 	}{
-		{"G stdlib + br", probeStdlibBr},
+		{"D uTLS Node bytes, 2 writes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, false) }},
 		{"N Node 22.20 fetch", probeNode},
-		{"D uTLS Node hello + Node HTTPS bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, probeHost+":443") }},
-		{"G stdlib + br", probeStdlibBr},
+		{"C uTLS Node bytes, 1 write", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, true) }},
+		{"D uTLS Node bytes, 2 writes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, false) }},
 		{"A current client", probeCurrent},
 	}
 	for i, p := range probes {
@@ -73,23 +73,6 @@ func init() {
 			"remote", r.remote, "alpn", r.alpn, "err", err)
 	}
 	time.Sleep(3 * time.Second)
-}
-
-// fetchSnapshot's request plus Node's Accept-Encoding; DK still answers gzip.
-func probeStdlibBr(ctx context.Context, r *probeResult) error {
-	req, _ := http.NewRequestWithContext(traceConn(ctx, r), http.MethodGet, snapshotURL, nil)
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
-	req.Header.Set("Origin", dkOrigin)
-	req.Header.Set("Referer", dkOrigin+"/")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Accept-Encoding", "br, gzip, deflate")
-	resp, err := dkClient.Do(req)
-	if err != nil {
-		return err
-	}
-	return readProbe(resp, r)
 }
 
 func probeNode(ctx context.Context, r *probeResult) error {
@@ -119,19 +102,44 @@ func probeCurrent(ctx context.Context, r *probeResult) error {
 	return nil
 }
 
-func probeRaw(ctx context.Context, r *probeResult, addr string) error {
-	if addr == "" {
-		return errors.New("no address")
+// heldConn passes the ClientHello through, then holds writes until flush, so the client's Finished
+// and the request leave in one TCP write like Node's. TLS 1.3 lets the client send data right after Finished.
+type heldConn struct {
+	net.Conn
+	writes int
+	buf    []byte
+}
+
+func (c *heldConn) Write(b []byte) (int, error) {
+	c.writes++
+	if c.writes == 1 {
+		return c.Conn.Write(b)
 	}
+	c.buf = append(c.buf, b...)
+	return len(b), nil
+}
+
+func (c *heldConn) flush() error {
+	_, err := c.Conn.Write(c.buf)
+	c.buf = nil
+	return err
+}
+
+func probeRaw(ctx context.Context, r *probeResult, coalesce bool) error {
 	var d net.Dialer
-	raw, err := d.DialContext(ctx, "tcp", addr)
+	raw, err := d.DialContext(ctx, "tcp", probeHost+":443")
 	if err != nil {
 		return err
 	}
 	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(10 * time.Second))
 	r.remote = raw.RemoteAddr().String()
-	uc := utls.UClient(raw, &utls.Config{ServerName: probeHost}, utls.HelloCustom)
+	var conn net.Conn = raw
+	held := &heldConn{Conn: raw}
+	if coalesce {
+		conn = held
+	}
+	uc := utls.UClient(conn,&utls.Config{ServerName: probeHost}, utls.HelloCustom)
 	b, err := hex.DecodeString(strings.TrimSpace(nodeHelloHex))
 	if err != nil {
 		return err
@@ -149,6 +157,11 @@ func probeRaw(ctx context.Context, r *probeResult, addr string) error {
 	r.alpn = uc.ConnectionState().NegotiatedProtocol
 	if _, err := io.WriteString(uc, nodeRequest); err != nil {
 		return err
+	}
+	if coalesce {
+		if err := held.flush(); err != nil {
+			return err
+		}
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(uc), nil)
 	if err != nil {
