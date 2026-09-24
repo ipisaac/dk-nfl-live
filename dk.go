@@ -49,7 +49,13 @@ const (
 	redialGrace     = time.Second
 )
 
-var dkClient = &http.Client{Timeout: netTimeout}
+// dkClient speaks HTTP/1.1 only: from datacenter IPs (Render) Akamai 403s Go's HTTP/2 snapshot request.
+var dkClient = func() *http.Client {
+	http1 := new(http.Protocols)
+	http1.SetHTTP1(true)
+	// Not a DefaultTransport clone: that one still offers h2 in ALPN and gets h2 frames back.
+	return &http.Client{Timeout: netTimeout, Transport: &http.Transport{Protocols: http1}}
+}()
 
 // subscriptionQuery is one of a snapshot's subscriptionPartials.
 type subscriptionQuery struct {
@@ -75,6 +81,7 @@ func fetchSnapshot(ctx context.Context, client *http.Client, url string) ([]byte
 	req.Header.Set("Accept-Language", "en-CA,en;q=0.9") // Akamai 403s without it
 	req.Header.Set("Origin", dkOrigin)
 	req.Header.Set("Referer", dkOrigin+"/")
+	req.Header.Set("Connection", "keep-alive") // Akamai 403s HTTP/1.1 without it
 
 	resp, err := client.Do(req)
 	if err != nil {

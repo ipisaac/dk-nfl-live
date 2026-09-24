@@ -49,6 +49,7 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
     browser headers.
   - Socket handshake: curl gets 101.
   - The snapshot also needs `Accept-Language`: the same Go client gets 403 without it (2026-09-23).
+  - Over HTTP/1.1 it also needs `Connection: keep-alive`, whatever the TLS client (2026-09-24).
 - Both hosts are Akamai-fronted. The socket CNAMEs to `sportsbook-ws-us-star-stls…`, probably a
   St. Louis origin.
 - RTT from Toronto: ~7.5 ms to the Akamai edge, ~20 ms to AWS Ohio.
@@ -491,6 +492,19 @@ The `/healthz` body carries:
     the socket handshake returns 403 too, while both work from the home PC. The socket has no TLS
     check, so this is IP or ASN blocking. Another TLS rung won't fix it. The machine is stopped;
     next is Render Ohio.
+  - **Result (2026-09-24, Render Ohio Free):** half works. The socket subscribes and frames
+    arrive (lag p50 ~20 ms, RTT ~37 ms), but every snapshot returns 403, so the board never
+    bootstraps and stays `connecting`. The socket being accepted means Render's IPs aren't hard
+    blocked like Fly's; the snapshot's Akamai check rejects this client from this network (it passes
+    from home). Next is TLS ladder rung 2 (uTLS Chrome ClientHello, snapshot client only).
+  - **Rung 2 tried and dropped (2026-09-24, from home):** every uTLS ClientHello (Chrome, Firefox,
+    Safari, even Node's own, replayed) got 403 over HTTP/1.1, while plain Go got 200 over HTTP/2.
+    It was HTTP/1.1, not TLS: Akamai 403s an HTTP/1.1 request without `Connection: keep-alive`,
+    which Node sends and Go doesn't. Stdlib TLS with Node's exact request got 200; removing that one
+    header made it 403. Fix, no new dependency: `dkClient` is HTTP/1.1 only (a fresh `Transport`;
+    a `DefaultTransport` clone still offers h2 in ALPN) and the snapshot sends
+    `Connection: keep-alive`, matching Node `fetch`, which reportedly passes from Render Ohio.
+    Live from home with it. Next: push and check Render's `/healthz`.
   - From a phone on cellular: the board streams and prices move; then airplane mode for 60 s →
     stale banner, and back → live.
   - Automatic restart: kill the process on the machine; the platform restarts it on its own and an
