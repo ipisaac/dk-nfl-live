@@ -27,7 +27,7 @@ import (
 
 const probeHost = "sportsbook-nash.draftkings.com"
 
-// Byte for byte what Node's fetch sends for dk-scraper's headers.
+// Byte for byte what Node 22.20's fetch sends over HTTPS for dk-scraper's headers.
 const nodeRequest = "GET /api/sportscontent/dkcaon/v1/leagues/88808 HTTP/1.1\r\n" +
 	"host: " + probeHost + "\r\n" +
 	"connection: keep-alive\r\n" +
@@ -45,25 +45,20 @@ type probeResult struct {
 	remote, alpn  string
 }
 
-// Runs in init so the feed's snapshot requests can't overlap the probes. Go and Node alternate,
-// and D repeats at Node's edge IP, to separate client, edge and ordering effects.
+// Runs in init so the feed's snapshot requests can't overlap the probes. Tests whether offering br
+// (as Node does over HTTPS) is what Akamai wants, with stdlib TLS and with Node's hello.
 func init() {
 	if testing.Testing() {
 		return
 	}
-	var nodeEdge string
 	probes := []struct {
 		name string
 		run  func(context.Context, *probeResult) error
 	}{
-		{"D uTLS Node hello + Node bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, probeHost+":443") }},
-		{"N Node 22.20 fetch", func(ctx context.Context, r *probeResult) error {
-			err := probeNode(ctx, r)
-			nodeEdge = r.remote
-			return err
-		}},
-		{"D at Node's edge", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, nodeEdge) }},
+		{"G stdlib + br", probeStdlibBr},
 		{"N Node 22.20 fetch", probeNode},
+		{"D uTLS Node hello + Node HTTPS bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, probeHost+":443") }},
+		{"G stdlib + br", probeStdlibBr},
 		{"A current client", probeCurrent},
 	}
 	for i, p := range probes {
@@ -78,6 +73,23 @@ func init() {
 			"remote", r.remote, "alpn", r.alpn, "err", err)
 	}
 	time.Sleep(3 * time.Second)
+}
+
+// fetchSnapshot's request plus Node's Accept-Encoding; DK still answers gzip.
+func probeStdlibBr(ctx context.Context, r *probeResult) error {
+	req, _ := http.NewRequestWithContext(traceConn(ctx, r), http.MethodGet, snapshotURL, nil)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
+	req.Header.Set("Origin", dkOrigin)
+	req.Header.Set("Referer", dkOrigin+"/")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Accept-Encoding", "br, gzip, deflate")
+	resp, err := dkClient.Do(req)
+	if err != nil {
+		return err
+	}
+	return readProbe(resp, r)
 }
 
 func probeNode(ctx context.Context, r *probeResult) error {
