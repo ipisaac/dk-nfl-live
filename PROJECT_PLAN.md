@@ -9,6 +9,7 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
 | Area | Decision | Why |
 |---|---|---|
 | Stack | **Go**: stdlib `net/http`, `log/slog`, `embed`; `github.com/coder/websocket` | Single binary, cheap goroutine fan-out, fast JSON; chosen over TS/Node and Elixir after comparison |
+| TLS | `github.com/refraction-networking/utls`, snapshot client only | From Render, Akamai 403s the snapshot unless the ClientHello is Node's *and* `br` is offered; stdlib `crypto/tls` can't set the hello |
 | Feed | **Ontario** (`dkcaon`) | This is what the linked DK page shows from Toronto |
 | Host | **Fly.io `yyz`** after a probe shows DK accepts Fly's IPs; otherwise **Render Starter (Ohio)** with the same image | Toronto vs Ohio differs by only ~5 ms end to end; the probe decides |
 | Dev | Home PC on localhost; first public URL is Fly | Proven DK access from here. Cloudflare quick tunnels don't support SSE, and a named tunnel would need another account |
@@ -44,12 +45,16 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
 - `initialData:true` sends nothing more, so **the snapshot is required** for bootstrap and resync.
 
 ### Akamai and TLS
-- Akamai checks the TLS client on the snapshot, not the socket:
+- Home-PC probes show snapshot acceptance differs between clients; socket acceptance is separate:
   - Snapshot: Node `fetch` and Go stdlib `net/http` get 200; **curl gets 403** from the same IP with
     browser headers.
   - Socket handshake: curl gets 101.
   - The snapshot also needs `Accept-Language`: the same Go client gets 403 without it (2026-09-23).
-  - Over HTTP/1.1 it also needs `Connection: keep-alive`, whatever the TLS client (2026-09-24).
+  - The tested Go HTTP/1.1 request needs `Connection: keep-alive` from home (2026-09-24).
+    That header is not sufficient on Render; TLS fingerprinting there remains unverified.
+  - From Render Ohio (2026-09-24), the snapshot needs Node's ClientHello **and**
+    `Accept-Encoding: br, gzip, deflate`; either alone gets 403. DK still answers gzip.
+    Render's egress IP is not blocked.
 - Both hosts are Akamai-fronted. The socket CNAMEs to `sportsbook-ws-us-star-stls…`, probably a
   St. Louis origin.
 - RTT from Toronto: ~7.5 ms to the Akamai edge, ~20 ms to AWS Ohio.
@@ -343,7 +348,8 @@ The `/healthz` body carries:
   The socket stays on stdlib TLS whichever rung wins.
   - **Result (2026-09-23, home PC, Go 1.27.0, cloudflared 2026.9.1):** rung 1 wins. The stdlib
     snapshot got 200 four times out of four (~180 KB, 125–190 ms). The socket acked in 160–480 ms, and
-    `websocketPublishTimestamp` is an ISO-8601 string with 100 ns precision. No uTLS dependency.
+    `websocketPublishTimestamp` is an ISO-8601 string with 100 ns precision. No uTLS dependency
+    (added later for Render; see step 7).
     `go run .` reruns the probe until step 5 replaces `main.go`; step 7 re-checks from Fly.
 - [ ] 2. **Capture fixtures** into `testdata/`: the snapshot, plus real frames covering add, change,
   remove, a line move and a suspension.
@@ -494,17 +500,39 @@ The `/healthz` body carries:
     next is Render Ohio.
   - **Result (2026-09-24, Render Ohio Free):** half works. The socket subscribes and frames
     arrive (lag p50 ~20 ms, RTT ~37 ms), but every snapshot returns 403, so the board never
-    bootstraps and stays `connecting`. The socket being accepted means Render's IPs aren't hard
-    blocked like Fly's; the snapshot's Akamai check rejects this client from this network (it passes
-    from home). Next is TLS ladder rung 2 (uTLS Chrome ClientHello, snapshot client only).
+    bootstraps and stays `connecting`. Socket acceptance does not rule out an IP-based policy on
+    the separate snapshot endpoint. The snapshot rejects this client from Render but accepts it
+    from home; the cause needs a same-instance comparison.
   - **Rung 2 tried and dropped (2026-09-24, from home):** every uTLS ClientHello (Chrome, Firefox,
     Safari, even Node's own, replayed) got 403 over HTTP/1.1, while plain Go got 200 over HTTP/2.
-    It was HTTP/1.1, not TLS: Akamai 403s an HTTP/1.1 request without `Connection: keep-alive`,
+    The home probe exposed a request-header difference: the tested HTTP/1.1 request fails without `Connection: keep-alive`,
     which Node sends and Go doesn't. Stdlib TLS with Node's exact request got 200; removing that one
     header made it 403. Fix, no new dependency: `dkClient` is HTTP/1.1 only (a fresh `Transport`;
     a `DefaultTransport` clone still offers h2 in ALPN) and the snapshot sends
     `Connection: keep-alive`, matching Node `fetch`, which reportedly passes from Render Ohio.
-    Live from home with it. Next: push and check Render's `/healthz`.
+    Live from home with it; this did not establish a fix for Render.
+  - **Post-deploy result (2026-09-24, user-reported Render `/healthz`):** process restarted at
+    19:05:09 UTC, snapshot returned 403 at 19:05:22 UTC, socket `subscribed:true`, RTT 36 ms.
+    HTTP/1.1 plus keep-alive is insufficient there; the board remains `connecting` without a
+    snapshot. A stricter datacenter policy involving TLS is a hypothesis, not a finding.
+    Confirmed by reading `https://dk-nfl-live.onrender.com/healthz`: snapshot at 19:10:12 UTC
+    returned 403, `connecting`, `synced:false`, `subscribed:true`, one frame and one skipped
+    entity, socket RTT about 55 ms. This confirms the symptom, not its cause.
+    Next: verify the deployed commit, then compare Go and Node HTTP/1.1 requests from the same
+    Render instance with the same URL and headers, recording negotiated protocol, remote IP,
+    status and body validity. A client-dependent result alone does not isolate TLS from HTTP
+    serialization. Keep probes serial and at least 2 s apart, with production polling paused so
+    the combined requests respect the snapshot limit.
+    Render Free has no Shell/SSH access, and the current distroless image also cannot support it
+    ([Render SSH docs](https://render.com/docs/ssh)); an on-host probe needs a diagnostic deployment.
+  - **On-host probes (2026-09-24, Render Ohio Free, temporary Node base image):** serial probes
+    at startup, before the feed, all hitting the same Akamai edge. Node 22.20 `fetch` got 200.
+    Stdlib TLS with `br` got 403; Node's replayed ClientHello with `gzip, deflate` got 403; Node's
+    ClientHello with `br` got 200, whether the request left in one TCP write or two. Fix
+    (rung 2 after all): `dkClient` dials with uTLS using Node's ClientHello (`tlshello.go`, ALPN
+    `http/1.1` only), offers `br, gzip, deflate` and gunzips by hand. **Render is `live`** with it:
+    synced, subscribed, frames applied, lag p50 ~18 ms, socket RTT ~36 ms. Probes removed and the
+    image is distroless again.
   - From a phone on cellular: the board streams and prices move; then airplane mode for 60 s →
     stale banner, and back → live.
   - Automatic restart: kill the process on the machine; the platform restarts it on its own and an

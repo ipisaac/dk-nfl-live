@@ -6,10 +6,7 @@ COPY *.go ./
 COPY web ./web
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /app .
 
-# Temporary: Node 22.20 base so probe.go can run probe.mjs.
-FROM node:22.20-alpine
+FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /app /app
-COPY probe.mjs /probe.mjs
-USER node
 EXPOSE 8080
 ENTRYPOINT ["/app"]

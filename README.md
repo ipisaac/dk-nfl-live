@@ -20,8 +20,11 @@ Open <http://localhost:8080>. `PORT` is the only setting (default `8080`).
 | `/events` | The SSE stream the page reads |
 | `/healthz` | JSON health (state, socket, snapshot errors, delay). 200 when the process is up |
 
-If the board doesn't load, check `/healthz`. A `snapshotErr` with 403 means DK's CDN (Akamai)
-rejected your network.
+If the board doesn't load, check `/healthz`. A `snapshotErr` with 403 means the snapshot request
+was refused; it does not identify whether the cause is the network, TLS or HTTP request. A healthy
+socket cannot bootstrap the board without a successful snapshot. From Render, DK's CDN (Akamai)
+accepts the snapshot only with Node's TLS ClientHello plus `br` in `Accept-Encoding`, which is why
+the snapshot client uses uTLS (`tlshello.go`).
 
 ```bash
 go vet ./...
@@ -58,7 +61,8 @@ DK push WebSocket ── every price change, as it happens ───────
   socket by 0.5–4.2 s. The socket delivers a change tens of ms after DK publishes it.
 - **No batching.** Every DK frame goes straight to browsers, with no disk or network I/O on the way.
 - **Go.** One small static binary, a goroutine per viewer, and a stdlib covering HTTP, JSON and TLS.
-  One dependency: `coder/websocket`.
+  Two dependencies: `coder/websocket`, and `refraction-networking/utls` so the snapshot's TLS
+  handshake matches Node's, which Akamai requires from Render.
 - **SSE to the browser.** Data flows one way. SSE is plain HTTP, and `EventSource` reconnects by
   itself with no client library.
 - **Memory only.** 32 games rebuild from DK in about a second after a restart.
@@ -66,7 +70,8 @@ DK push WebSocket ── every price change, as it happens ───────
 - **Hosting on Render (Ohio).** Fly.io Toronto (`yyz`) was the first choice, closest to DK's edge
   and Ontario viewers. Testing it on 2026-09-24 showed DK returns 403 to Fly for both the snapshot
   and the socket (an IP block, since both work from a home connection). The same image runs on
-  Render Ohio instead, at a cost of roughly 5 ms end to end.
+  Render Ohio instead, at a cost of roughly 5 ms end to end. Render isn't blocked, but its
+  snapshot requests pass Akamai only with a Node-like TLS handshake and `br` offered.
 
 ## How fresh are the odds?
 
