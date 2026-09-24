@@ -11,7 +11,7 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
 | Stack | **Go**: stdlib `net/http`, `log/slog`, `embed`; `github.com/coder/websocket` | Single binary, cheap goroutine fan-out, fast JSON; chosen over TS/Node and Elixir after comparison |
 | Feed | **Ontario** (`dkcaon`) | This is what the linked DK page shows from Toronto |
 | Host | **Fly.io `yyz`** after a probe shows DK accepts Fly's IPs; otherwise **Render Starter (Ohio)** with the same image | Toronto vs Ohio differs by only ~5 ms end to end; the probe decides |
-| Dev | Home PC first, public via Cloudflare quick tunnel | Proven DK access from here |
+| Dev | Home PC on localhost; first public URL is Fly | Proven DK access from here. Cloudflare quick tunnels don't support SSE, and a named tunnel would need another account |
 | Prior art | `odds-scraper-pg` **not reused** | Batch polling, so its latency floor is the poll interval; only its DK lessons carry over |
 
 ## DK facts (verified 2026-09-22 from the home PC)
@@ -305,8 +305,11 @@ The `/healthz` body carries:
 - **Headers**: `text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`.
 
 ### Page (`web/`)
-- **Table**: time (viewer's local zone), away @ home, spread, total, moneyline. Rows are keyed by game id.
-- **Moves**: moved cells flash with ▲/▼ plus colour, not colour alone. Suspended cells are greyed.
+- **Table**: kickoff date and time (viewer's local zone; blank if a rebuilt event lost it), away @ home,
+  spread, total, moneyline. Rows are keyed by game id.
+- **Moves**: moved cells flash with ▲/▼ plus colour, not colour alone (▲ = decimal odds up, or the line up
+  if only it moved). Suspended cells are greyed and show 🔒 instead of a price.
+- **Reconnect**: a `board` event patches the rows already shown, so moves across the gap still flash.
 - **Status bar** (`role="status"`): LIVE / Polling / Stale since … / Reconnecting, the last update
   time, and DK lag p50.
 - **CSP**: CSS inline in `index.html`, JS in `app.js`.
@@ -417,18 +420,61 @@ The `/healthz` body carries:
       `live`, resync on rejection, pongs counting as heard, the ack ending backoff).
     - Smoke run against DK from the home PC: `live` 8 s after the ack (the `snapshotLag` wait),
       32 games, zero misses.
-- [ ] 5. **Server and page.** Write `sse.go`, `main.go` and `web/`.
+- [x] 5. **Server and page.** Write `sse.go`, `main.go` and `web/`.
   - Handoff: publish concurrently with many subscribes under `-race`. Every client's first message is
     `board`, and applying its patches in order gives the final board.
   - Heartbeat (synctest): an idle stream emits `event: status` with `data` every 15 s.
-- [ ] 6. **Go public from home.** Home run + quick tunnel → public URL; 1 h soak.
-- [ ] 7. **Deploy.**
+  - **Result (2026-09-23):** `sse.go`, `main.go` (routes, CSP, `BaseContext` so shutdown ends SSE
+    streams), `web/index.html` + `web/app.js`; `go test -race ./...` passes, three times over.
+    - Tests: handoff (fails if the board and registration are split across two locks), slow-client
+      drop, heartbeat timing under synctest, routes + CSP, and no HTML sinks in `app.js`.
+    - Empty board encodes `rows: []`, not `null`, so a browser connecting before the first snapshot
+      doesn't throw.
+    - `web_test.js` (run by `TestAppJS` when `node` is on PATH) drives `app.js` with a fake DOM,
+      EventSource and clock. It checks three things: an empty bootstrap board is accepted; retries
+      that keep failing still go stale 35 s after the last event, since only events reset the
+      watchdog; and a silent open stream is reopened every 35 s.
+    - Home run against DK: `live` 8 s after the ack, 32 games, `/healthz` synced with zero misses.
+      At 375 px the table fits with no page scroll. Forced checks in the browser: watchdog stale banner
+      with dimmed odds, ▲/▼ flashes, suspended lock.
+- [x] 6. **Local soak.** `go run .` on the home PC with a browser on `localhost:8080`, for 1 h.
+  - Memory: process RSS (`Get-Process`) at the start, every 15 min and at the end stays flat.
+  - Reconnects: `/healthz` `subscriptions` doesn't climb on its own, and the browser's `/events`
+    requests stay at one.
+  - Heartbeats: the idle stream shows a `status` event every 15 s, and the page never goes stale
+    while the server is up.
+  - Outage recovery: Verification 4 during the soak. Network off 60 s, then back on. For the process
+    kill, `go run .` has no supervisor: kill it (`Stop-Process -Name dk-nfl-live`), restart it by hand,
+    and check the already-open page returns to live without a reload. Automatic restart is a hosted
+    check (step 7).
+  - A quiet pre-game market doesn't count as NFL in-play validation; step 2 stays open for that.
+  - **Results (2026-09-23, 13:05–14:05, follow-up to 14:48, network-off check at 18:23).**
+    - Memory is flat within each run: 59–61 MB before the kill, 23–25 MB after the restart.
+    - `rejected` 0, `misses` 0 and `skipped` 0 throughout. The page never went stale while the
+      server was up. `status` heartbeats arrive every 15 s.
+    - Process kill: pass. Killed at 13:35:34 and restarted by hand at 13:36:20. The open page kept
+      all 32 rows, went stale, reopened its stream through the watchdog, and was LIVE at 13:36:34
+      with no reload.
+    - DK closes the socket (EOF) after exactly 30 min: 13:34:47, 14:06:26 and 14:36:26. Each time
+      the server polled for about 9 s, then went live on a new subscription. That is the only reason
+      `subscriptions` climbs; it isn't a reconnect loop. The page showed Polling and kept its stream.
+    - Network off: pass. DK was unreachable 18:23:50–18:25:27 (about 98 s, logged every second). The
+      page went stale at 18:24:05 ("Stale since …", prices dimmed) and kept all 32 games. DK was
+      reachable again at 18:25:28; the server resubscribed once (`subscriptions` 10 → 11), polled,
+      and the open page was LIVE at 18:25:37.8, about 10 s later, with no reload.
+- [ ] 7. **Deploy to Fly and go public.**
   - `fly.toml`: `primary_region="yyz"`, `internal_port=8080`, `force_https`,
     `auto_stop_machines="off"`, `min_machines_running=1`, a `/healthz` check, `shared-cpu-1x` 256 MB,
     one machine.
   - The user runs `fly auth login` and billing; then `fly deploy`.
-  - Check `/healthz` from Fly. If the snapshot 403s there, fall back to Render Starter (Ohio, Docker,
-    health path `/healthz`) with the same image; Render sets `PORT`.
+  - Probe DK from Fly: `/healthz` on the first deploy shows the snapshot status and socket state from
+    `yyz`. If the snapshot 403s there, fall back to Render Starter (Ohio, Docker, health path
+    `/healthz`) with the same image; Render sets `PORT`.
+  - From a phone on cellular: the board streams and prices move; then airplane mode for 60 s →
+    stale banner, and back → live.
+  - Automatic restart: kill the process on the machine; the platform restarts it on its own and an
+    open page returns to live without a reload.
+  - Repeat the step-6 soak through the public URL, to cover Fly's proxy (buffering, idle timeouts).
 
 ## Verification
 1. `go vet ./...` and `go test -race ./...` pass.
@@ -440,9 +486,10 @@ The `/healthz` body carries:
    - Network off for 60 s: the stale banner shows over the last-good odds, never a blank board.
    - Network back on: live again within 25 s (socket backoff ≤ 15 s, then a snapshot cut after
      the ack). Prices move as soon as the socket is back.
-   - Process killed: the page recovers on its own.
-5. The tunnel URL works on a phone on cellular.
-6. 1 h soak: no reconnect loop, memory flat.
+   - Process killed: once it's back (restarted by hand locally, by the platform when hosted), the
+     open page returns to live without a reload.
+5. The Fly URL works on a phone on cellular, including recovery after an outage.
+6. 1 h soak, locally and again through Fly: no reconnect loop, memory flat, heartbeats every 15 s.
 7. The same checks pass on Fly (or on Render as the fallback).
 
 ## Deliberately skipped (add when needed)

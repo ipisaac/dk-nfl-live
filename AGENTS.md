@@ -63,6 +63,5 @@ go vet ./...
 go test -race ./...
 go run .
 CAPTURE_LEAGUE=88808 CAPTURE_FOR=3h go test -tags capture -run TestCapture -timeout 0 -v
-cloudflared tunnel --url http://localhost:8080
 fly deploy
 ```

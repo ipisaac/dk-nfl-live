@@ -123,7 +123,7 @@ type Row struct {
 	ID        string    `json:"id"`
 	Away      string    `json:"away"`
 	Home      string    `json:"home"`
-	Start     time.Time `json:"start"`
+	Start     time.Time `json:"start,omitzero"` // zero if a rebuilt event lost its start time
 	Live      bool      `json:"live"`
 	Spread    Sides     `json:"spread"`
 	Total     OverUnder `json:"total"`
@@ -494,10 +494,12 @@ func americanFromDecimal(d float64) string {
 // Games returns the rows by start time.
 func (b *Board) Games() []Row {
 	rows := slices.Collect(maps.Values(b.rows))
-	slices.SortFunc(rows, func(x, y Row) int {
-		return cmp.Or(x.Start.Compare(y.Start), strings.Compare(x.ID, y.ID))
-	})
+	slices.SortFunc(rows, byStart)
 	return rows
+}
+
+func byStart(x, y Row) int {
+	return cmp.Or(x.Start.Compare(y.Start), strings.Compare(x.ID, y.ID))
 }
 
 // Row reports a game's row; false means the game is gone.

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFL Live Odds</title>
+<meta name="description" content="DraftKings Ontario NFL main lines, updated as they move.">
+<style>
+:root {
+  --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --row: #ffffff;
+  --live: #15803d; --stale: #b91c1c; --stale-fg: #ffffff; --warn: #a16207;
+  --up: #15803d; --up-bg: #dcfce7; --down: #b91c1c; --down-bg: #fee2e2; --susp-bg: #f5f5f4;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c0a09; --fg: #f5f5f4; --muted: #a8a29e; --line: #292524; --row: #1c1917;
+    --live: #4ade80; --stale: #dc2626; --warn: #facc15;
+    --up: #4ade80; --up-bg: #14532d; --down: #f87171; --down-bg: #7f1d1d; --susp-bg: #171412;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c0a09; --fg: #f5f5f4; --muted: #a8a29e; --line: #292524; --row: #1c1917;
+  --live: #4ade80; --stale: #dc2626; --warn: #facc15;
+  --up: #4ade80; --up-bg: #14532d; --down: #f87171; --down-bg: #7f1d1d; --susp-bg: #171412;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; max-width: 760px; padding: 0 16px 32px;
+  background: var(--bg); color: var(--fg);
+  font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; padding: 16px 0 12px; }
+h1 { margin: 0; font-size: 24px; }
+#status { margin: 0; color: var(--muted); font-size: 12px; }
+#state { font-weight: 600; }
+#detail:not(:empty)::before { content: "· "; }
+body[data-state="live"] #state { color: var(--live); }
+body[data-state="polling"] #state, body[data-state="reconnecting"] #state, body[data-state="connecting"] #state { color: var(--warn); }
+body[data-state="stale"] #status { width: 100%; padding: 8px 12px; border-radius: 6px; background: var(--stale); color: var(--stale-fg); }
+body[data-state="stale"] tbody td.price { opacity: .45; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { padding: 6px 8px; color: var(--muted); font-size: 12px; font-weight: 500; text-align: right; text-transform: uppercase; letter-spacing: .04em; }
+th:nth-child(-n+2) { text-align: left; }
+tbody { background: var(--row); border-top: 8px solid var(--bg); }
+td { padding: 6px 8px; white-space: nowrap; }
+tbody tr + tr td { border-top: 1px solid var(--line); }
+td.time { color: var(--muted); font-size: 12px; vertical-align: middle; }
+td.time.live { color: var(--stale); font-weight: 600; }
+td.team { width: 100%; }
+td.price { text-align: right; }
+td.price .line { margin-right: 6px; color: var(--muted); }
+td.price.susp { background: var(--susp-bg); color: var(--muted); }
+td.price::after { display: inline-block; width: 1em; content: ""; }
+td.price.up::after { content: "▲"; color: var(--up); animation: fade 6s forwards; }
+td.price.down::after { content: "▼"; color: var(--down); animation: fade 6s forwards; }
+td.price.up { animation: flash-up 2s; }
+td.price.down { animation: flash-down 2s; }
+@keyframes flash-up { from { background: var(--up-bg); } }
+@keyframes flash-down { from { background: var(--down-bg); } }
+@keyframes fade { 0%, 70% { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  td.price.up, td.price.down, td.price.up::after, td.price.down::after { animation: none; }
+}
+#empty { color: var(--muted); }
+footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
+@media (max-width: 520px) {
+  td, th { padding: 6px 4px; }
+  td.price .line { display: block; margin: 0; }
+  td.time, td.team { white-space: normal; }
+}
+</style>
+</head>
+<body data-state="connecting">
+<header>
+  <h1>NFL odds</h1>
+  <p id="status"><span id="state" role="status">Connecting…</span> <span id="detail"></span></p>
+</header>
+<div class="scroll">
+  <table id="games">
+    <thead><tr><th>Time</th><th>Game</th><th>Spread</th><th>Total</th><th>Money</th></tr></thead>
+  </table>
+</div>
+<p id="empty" hidden>No games on the board.</p>
+<footer>Main lines from DraftKings Ontario. ▲ odds lengthened, ▼ shortened.</footer>
+<script src="app.js"></script>
+</body>
+</html>
