@@ -65,6 +65,7 @@ function setPrice(td, r, old, market, side) {
   const line = document.createElement("span");
   const odds = document.createElement("span");
   line.className = "line";
+  odds.className = "odds";
   if (suspended) {
     odds.textContent = "🔒";
     td.title = "Suspended";
@@ -165,7 +166,7 @@ function render() {
   const parts = [];
   if (lastMove) parts.push("updated " + clock(lastMove));
   const delay = state === "live" && server.delayP50ms && rtt != null;
-  if (delay) parts.push("est. typical delay ~" + Math.round(server.delayP50ms + rtt / 2) + " ms");
+  if (delay) parts.push("est. delay ~" + Math.round(server.delayP50ms + rtt / 2) + " ms");
   detailEl.textContent = parts.join(" · ");
   detailEl.title = delay ? DELAY_NOTE : "";
   emptyEl.hidden = games.size > 0 || server.state === "connecting";

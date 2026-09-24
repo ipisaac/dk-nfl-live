@@ -95,6 +95,6 @@ const live = { rows: [], status: { state: "live" } };
   assert.strictEqual(p.probes.length, 1);
   p.probes[0]();
   await new Promise((r) => setImmediate(r));
-  assert.strictEqual(p.detail(), "est. typical delay ~60 ms");
+  assert.strictEqual(p.detail(), "est. delay ~60 ms");
   console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });
