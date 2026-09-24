@@ -261,6 +261,8 @@ reconnect, the 60 s resync, polling, an unknown ID, a rejected frame.
 - Except right after DK's 30-min close: when a `live` board's socket closes after 60 s healthy, it
   redials at once, and requests wait up to 1 s for the ack (a failed redial ends the wait). A snapshot
   sent before the ack can't hold what the redial misses, and would push the post-ack one back 2 s.
+  Requests already queued before the close aren't held, and a snapshot started less than 2 s before
+  the ack still delays the post-ack snapshot until 2 s after that start, as before.
 
 #### Freshness
 Four separate facts, never mixed:
