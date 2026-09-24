@@ -488,6 +488,10 @@ The `/healthz` body carries:
   - Probe DK from Fly: `/healthz` on the first deploy shows the snapshot status and socket state from
     `yyz`. If the snapshot 403s there, fall back to Render Starter (Ohio, Docker, health path
     `/healthz`) with the same image; Render sets `PORT`.
+  - **Result (2026-09-24, Fly `yyz`, image 3.9 MB):** DK refuses Fly. The snapshot returns 403 and
+    the socket handshake returns 403 too, while both work from the home PC. The socket has no TLS
+    check, so this is IP or ASN blocking. Another TLS rung won't fix it. The machine is stopped;
+    next is Render Ohio.
   - From a phone on cellular: the board streams and prices move; then airplane mode for 60 s →
     stale banner, and back → live.
   - Automatic restart: kill the process on the machine; the platform restarts it on its own and an
