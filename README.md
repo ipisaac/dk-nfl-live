@@ -82,7 +82,8 @@ subscription is the same one DK's own site uses, taken from the snapshot's `subs
   starts at least 2 s apart, with backoff after failures. The triggers are bootstrap, reconnect, the
   60 s resync, polling, and a bad frame.
 - **Health checks.** The socket is pinged every 15 s. A dead socket reconnects with jittered backoff
-  (0.5 s up to 15 s).
+  (0.5 s up to 15 s). DK also closes every socket after 30 min. The feed redials that one at once
+  and fetches the snapshot at the ack, so the snapshot covers the gap.
 
 **Board (`board.go`).** It holds DK's events, markets and selections in memory and turns them
 into one row per game.
@@ -129,7 +130,7 @@ rows to the Hub.
 
 | What happened | What the page shows | How it recovers |
 |---|---|---|
-| DK closes the socket (it does this every 30 min) | Polling DK for ~9 s. Prices keep moving. | It resubscribes, then waits for a snapshot cut after the ack |
+| DK closes the socket (it does this every 30 min) | Polling DK for ~8.5 s. Prices keep moving. | It redials at once, fetches a snapshot at the ack, then waits for a snapshot cut after the ack |
 | Socket down | Polling DK. Prices refresh from the snapshot every 2 s. | It reconnects with backoff |
 | Socket and snapshot both failing | "Stale since …" with dimmed prices. All games stay on screen. | It goes back to LIVE by itself |
 | DK sends a malformed frame | Nothing changes | The frame is rejected and the board resyncs |
@@ -220,7 +221,7 @@ The status bar always says which mode it is in:
 | Status | How old a price can be | Why |
 |---|---|---|
 | **LIVE** | As in the timeline above | The socket is healthy and the board is synced |
-| **Polling DK**, after a reconnect (DK closes the socket every 30 min) | Still per frame. Changes stream as soon as the new subscription is acked | It shows Polling for ~8–9 s only until a snapshot cut after the ack confirms the board (`snapshotLag` = 8 s) |
+| **Polling DK**, after a reconnect (DK closes the socket every 30 min) | Still per frame once the new subscription is acked, about 0.3 s after the close. What changed in between comes with the snapshot fetched at the ack, or the next one 2 s later if DK's snapshot lags | It shows Polling for ~8.5 s only until a snapshot cut after the ack confirms the board (`snapshotLag` = 8 s) |
 | **Polling DK**, socket down | Usually ≤ ~2.3 s: a 2 s poll interval plus a 125–260 ms fetch. Up to ~6.5 s when DK's snapshot itself lags (0.5–4.2 s, in 1–2% of polls) | Prices come from the REST snapshot only |
 | **Stale since hh:mm:ss** | Anything since that time; prices are dimmed | Neither source has been fresh for 15 s, or the browser heard nothing from our server for 35 s |
 
@@ -228,6 +229,7 @@ The status bar always says which mode it is in:
 - **After a 98 s network outage:** LIVE 10 s after connectivity returned.
 - **After a process kill and manual restart:** LIVE 14 s after the restart.
 - **After each of DK's 30-min socket closes:** about 9 s of Polling, with prices still streaming.
+  That was before the immediate redial; ~8.5 s is expected now, not yet measured.
 
 ### Reading the status bar
 

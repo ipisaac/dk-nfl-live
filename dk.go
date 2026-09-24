@@ -46,6 +46,7 @@ const (
 	reconnectBase   = 500 * time.Millisecond
 	reconnectMax    = 15 * time.Second
 	healthyReset    = 60 * time.Second
+	redialGrace     = time.Second
 )
 
 var dkClient = &http.Client{Timeout: netTimeout}
@@ -216,9 +217,10 @@ type (
 		rtt time.Duration // a ping's round trip; 0 for other messages
 	}
 	lostMsg struct {
-		sub int
-		at  time.Time
-		err error
+		sub    int
+		at     time.Time
+		err    error
+		redial bool // the subscription was healthy, so the socket redials at once
 	}
 	snapshotMsg struct {
 		body  []byte
@@ -257,6 +259,10 @@ type Feed struct {
 	status     Status
 	h          Health
 	socketRTT  time.Duration
+	// Set for redialGrace after a live board's healthy socket closes. Until the redial acks, snapshots
+	// wait: one sent now can't hold what the redial misses, and would push the post-ack one back by
+	// snapshotSpacing. Status stays polling, not stale, until it fires.
+	redialWait <-chan time.Time
 
 	mu     sync.Mutex
 	shared Health
@@ -296,6 +302,8 @@ func (f *Feed) Run(ctx context.Context) {
 		case m := <-f.in:
 			f.handle(m)
 		case <-tick.C:
+		case <-f.redialWait:
+			f.redialWait = nil
 		case <-resync.C:
 			f.request()
 		}
@@ -318,7 +326,7 @@ func (f *Feed) handle(m any) {
 			}
 		}
 	case lostMsg:
-		f.onLost(m.sub, m.err)
+		f.onLost(m)
 	case snapshotMsg:
 		m.done <- f.onSnapshot(m.body, m.err, m.start, time.Now())
 	}
@@ -336,10 +344,14 @@ func (f *Feed) onAck(sub int, at time.Time) {
 	f.needResync(at)
 }
 
-func (f *Feed) onLost(sub int, err error) {
-	slog.Warn("socket", "sub", sub, "err", err)
-	f.h.SocketErr = err.Error()
-	if sub == f.sub {
+func (f *Feed) onLost(m lostMsg) {
+	slog.Warn("socket", "sub", m.sub, "err", m.err)
+	f.h.SocketErr = m.err.Error()
+	f.redialWait = nil
+	if m.redial && f.status.State == "live" {
+		f.redialWait = time.After(redialGrace)
+	}
+	if m.sub == f.sub {
 		f.subscribed, f.synced = false, false
 	}
 	f.request()
@@ -478,6 +490,9 @@ func (f *Feed) reconnect(why string) {
 
 // request asks the scheduler for a snapshot. It never blocks, and requests coalesce.
 func (f *Feed) request() {
+	if f.redialWait != nil && !f.subscribed {
+		return
+	}
 	select {
 	case f.kick <- struct{}{}:
 	default:
@@ -508,7 +523,7 @@ func (f *Feed) currentStatus(now time.Time) Status {
 	case healthy && f.synced:
 		f.lastLive = now
 		return Status{State: "live"}
-	case now.Sub(f.lastSync) <= syncFresh:
+	case now.Sub(f.lastSync) <= syncFresh || f.redialWait != nil:
 		return Status{State: "polling"}
 	}
 	return Status{State: "stale", StaleSince: laterOf(f.lastLive, f.lastSync)}
@@ -633,18 +648,21 @@ func (f *Feed) socket(ctx context.Context) {
 		dialCtx, cancel := context.WithTimeout(ctx, netTimeout)
 		conn, _, err := dialAndSubscribe(dialCtx, f.client, f.socketURL, nflSubscription)
 		cancel()
+		healthy := false
 		if err == nil {
 			acked := time.Now()
 			f.send(ctx, ackMsg{sub, acked})
 			err = f.read(ctx, conn, sub)
-			if time.Since(acked) >= healthyReset {
-				failures = 0
-			}
+			healthy = time.Since(acked) >= healthyReset
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		f.send(ctx, lostMsg{sub, time.Now(), err})
+		f.send(ctx, lostMsg{sub, time.Now(), err, healthy})
+		if healthy {
+			failures = 0 // DK closes every socket after 30 min: redial at once
+			continue
+		}
 		if !sleepCtx(ctx, backoff(reconnectBase, reconnectMax, failures)) {
 			return
 		}

@@ -181,7 +181,7 @@ func TestStaleSnapshot(t *testing.T) {
 		t.Fatal("no reconnect 10 s after the first miss")
 	}
 
-	f.onLost(1, errForcedReconnect)
+	f.onLost(lostMsg{sub: 1, err: errForcedReconnect})
 	f.onAck(2, sec(30))
 	commit(t, f, "-108", 30.5)
 	want(t, f, "-108", false)
@@ -282,7 +282,7 @@ func fieldNames[T any](e *entry[T]) []string {
 func TestLostUpdate(t *testing.T) {
 	f := syncedFeed(t)
 	onFrame(f, 10, priceFrame("+110"))
-	f.onLost(1, errors.New("EOF"))
+	f.onLost(lostMsg{sub: 1, err: errors.New("EOF")})
 	f.onAck(2, sec(12))
 	commit(t, f, "+120", 12.5) // holds an update the old subscription never delivered
 	want(t, f, "+120", false)
@@ -366,6 +366,7 @@ type fakeDK struct {
 	mu          sync.Mutex
 	snapshot    func() (status int, body []byte) // status 0 hangs until the client gives up
 	delay       time.Duration
+	socketDelay time.Duration
 	socketUp    bool
 	deaf        int // this many sockets stop answering pings after the ack
 	all         []*websocket.Conn
@@ -424,8 +425,13 @@ func (dk *fakeDK) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (dk *fakeDK) serveSocket(w http.ResponseWriter, r *http.Request) {
 	dk.mu.Lock()
-	up := dk.socketUp
+	up, delay := dk.socketUp, dk.socketDelay
 	dk.mu.Unlock()
+	select {
+	case <-time.After(delay):
+	case <-r.Context().Done():
+		return
+	}
 	if !up {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 		return
@@ -511,12 +517,21 @@ func (l *pipeListener) dial(ctx context.Context, _, _ string) (net.Conn, error) 
 }
 
 type recorder struct {
-	mu     sync.Mutex
-	rows   map[string]Row
-	states []string
+	mu       sync.Mutex
+	f        *Feed
+	rows     map[string]Row
+	states   []string
+	price    string
+	timeline []moment // statuses and sel's prices as the page got them
+}
+
+type moment struct {
+	at   time.Time
+	what string
 }
 
 func (r *recorder) patch(rows []Row, removed []string) {
+	price := shown(r.f) // OnPatch runs on the apply goroutine, which owns the board
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, row := range rows {
@@ -525,12 +540,30 @@ func (r *recorder) patch(rows []Row, removed []string) {
 	for _, id := range removed {
 		delete(r.rows, id)
 	}
+	if price != r.price {
+		r.price = price
+		r.timeline = append(r.timeline, moment{time.Now(), price})
+	}
 }
 
 func (r *recorder) status(s Status) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.states = append(r.states, s.State)
+	r.timeline = append(r.timeline, moment{time.Now(), s.State})
+}
+
+// since is the timeline from start on, in seconds after start.
+func (r *recorder) since(start time.Time) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, m := range r.timeline {
+		if !m.at.Before(start) {
+			out = append(out, fmt.Sprintf("%+.2f %s", m.at.Sub(start).Seconds(), m.what))
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 func (r *recorder) snapshot() (map[string]Row, []string) {
@@ -558,7 +591,7 @@ func runFeed(t *testing.T, dk *fakeDK) (*Feed, *recorder) {
 	go srv.Serve(l)
 	tr := &http.Transport{DialContext: l.dial}
 	f := newFeed("http://dk/snapshot", "ws://dk/socket", &http.Client{Transport: tr, Timeout: netTimeout})
-	rec := &recorder{rows: map[string]Row{}}
+	rec := &recorder{f: f, rows: map[string]Row{}}
 	f.OnPatch, f.OnStatus = rec.patch, rec.status
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -650,6 +683,79 @@ func TestSnapshotAfterAck(t *testing.T) {
 			t.Fatalf("no snapshot request right after the ack at %v: %v", ack, dk.starts)
 		}
 	})
+}
+
+// DK closes every socket after 30 min. The fake acks in 300 ms and moves sel to +110 10 ms after the
+// close, which its snapshot shows lag later, then to +120 over the new socket at 6 s. Times are
+// seconds after the close.
+func TestRedial(t *testing.T) {
+	const ackDelay = 300 * time.Millisecond
+	hang := func(dk *fakeDK) { dk.socketDelay = time.Hour }
+	refuse := func(dk *fakeDK) { dk.socketUp = false }
+	failSnapshots := func(dk *fakeDK) { dk.snapshot = func() (int, []byte) { return http.StatusForbidden, nil } }
+	cases := []struct {
+		name          string
+		closeAt, lag  time.Duration // the resync fires at 60 and 120 s, status ticks on whole seconds
+		before, fault func(*fakeDK) // from 1 s on; for the first redial only
+		want          string
+	}{
+		{"clean", 70500 * time.Millisecond, 0, nil, nil, "+0.00 polling, +0.30 +110, +6.00 +120, +8.30 live"},
+		{"redial hangs", 70500 * time.Millisecond, 0, nil, hang, "+0.00 polling, +1.00 +110, +6.00 +120, +15.00 live"},
+		{"redial refused", 70500 * time.Millisecond, 0, nil, refuse, "+0.00 polling, +0.30 +110, +6.00 +120, +10.30 live"},
+		{"stale board", 70500 * time.Millisecond, 0, failSnapshots, nil, "+6.00 +120"},
+		{"resync due", 119900 * time.Millisecond, 0, nil, nil, "+0.00 polling, +0.30 +110, +6.00 +120, +8.30 live"},
+		{"resync just before", 60500 * time.Millisecond, 0, nil, nil, "+0.00 polling, +1.50 +110, +6.00 +120, +9.50 live"},
+		{"lagging snapshot", 70500 * time.Millisecond, 1500 * time.Millisecond, nil, nil, "+0.00 polling, +2.30 +110, +6.00 +120, +8.30 live"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dk := newFakeDK(t)
+				dk.socketDelay = ackDelay
+				_, rec := runFeed(t, dk)
+				sleep(time.Second)
+				if tc.before != nil {
+					dk.set(func() { tc.before(dk) })
+				}
+				sleep(tc.closeAt - time.Second)
+				if tc.fault != nil {
+					dk.set(func() { tc.fault(dk) })
+				}
+				closed := time.Now()
+				dk.drop()
+
+				until := func(d time.Duration) { sleep(time.Until(closed.Add(d))) }
+				move := func(american string) {
+					body := snapWith(t, american)
+					dk.set(func() {
+						if status, _ := dk.snapshot(); status == http.StatusOK {
+							dk.snapshot = serving(body)
+						}
+					})
+				}
+				until(10 * time.Millisecond)
+				dk.set(func() { dk.socketUp, dk.socketDelay = true, ackDelay })
+				until(10*time.Millisecond + tc.lag)
+				move("+110")
+				until(6 * time.Second)
+				dk.push(t, priceFrame("+120"))
+				until(6*time.Second + tc.lag)
+				move("+120")
+				until(18 * time.Second)
+
+				if got := rec.since(closed); got != tc.want {
+					t.Errorf("got  %s\nwant %s", got, tc.want)
+				}
+				dk.mu.Lock()
+				defer dk.mu.Unlock()
+				for i := 1; i < len(dk.starts); i++ {
+					if gap := dk.starts[i].Sub(dk.starts[i-1]); gap < snapshotSpacing {
+						t.Fatalf("snapshot starts %v apart", gap)
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestHalfOpenSocket(t *testing.T) {

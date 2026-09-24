@@ -258,6 +258,9 @@ reconnect, the 60 s resync, polling, an unknown ID, a rejected frame.
   a long backoff would hold the board below `live` after an outage.
 - Polling is the scheduler re-requesting after each result while status isn't `live`: the socket is
   down, or the board needs a resync.
+- Except right after DK's 30-min close: when a `live` board's socket closes after 60 s healthy, it
+  redials at once, and requests wait up to 1 s for the ack (a failed redial ends the wait). A snapshot
+  sent before the ack can't hold what the redial misses, and would push the post-ack one back 2 s.
 
 #### Freshness
 Four separate facts, never mixed:
@@ -269,13 +272,13 @@ Four separate facts, never mixed:
 Status is derived from the first three:
 - `connecting`: no board yet.
 - `live`: socket healthy and synced. A quiet market stays `live` indefinitely.
-- `polling`: not `live`, and last sync within 15 s.
+- `polling`: not `live`, and last sync within 15 s or the scheduler's redial wait running.
 - `stale`: neither. `staleSince` is the later of the last `live` moment and the last sync.
 
 #### Failures
 | Failure | Detection | Response | Viewer sees |
 |---|---|---|---|
-| Socket can't connect / closes | Dial or read error | Reconnect with full-jitter backoff (0.5 s → 15 s cap, reset after 60 s healthy); request a resync after every subscribe ack | `Reconnecting…` |
+| Socket can't connect / closes | Dial or read error | Reconnect at once after 60 s healthy, else with full-jitter backoff (0.5 s → 15 s cap); request a resync after every subscribe ack | `Reconnecting…` |
 | Socket half-open | `conn.Ping` every 15 s (5 s timeout) fails, two consecutive resyncs find drift (the snapshot changed a price no entry explains), or the lost-frame rule fires | Force reconnect | Brief blip |
 | Socket down, or board needs a resync | Freshness rules | Scheduler polls every 2 s until `live` | `Polling`, then `Stale` if snapshots fail too |
 | Snapshot 403 / 5xx / timeout / junk | Status code, `http.Client{Timeout: 5s}`, validation | Keep the last good board; scheduler backs off | Nothing, until stale |
@@ -360,7 +363,9 @@ The `/healthz` body carries:
     - `snapshotLag` = 8 s.
     - Fixtures: `testdata/{nfl,mlb,npb}-{start.json,frames.jsonl,end.json}`.
     - **Still open:** NFL in-play frames and suspensions (TNF 2026-09-24 or Sunday 2026-09-27), and
-      more `snapshotLag` samples there. Rerun `capture_test.go` then, and check this box.
+      more `snapshotLag` samples there. Rerun `capture_test.go` then, and check this box. From the
+      same capture, measure how often a snapshot already holds a change under 0.5 s old: after DK's
+      30-min close, the prices the redial missed come from the post-ack snapshot.
 - [x] 3. **Board.** Write `board.go` + `board_test.go`.
   - The subcategory is a Board field (NFL 4518, baseball 4519), so the baseball fixtures load too.
   - Replay: for each fixture league, start + every frame gives the same rows as end.
@@ -387,6 +392,10 @@ The `/healthz` body carries:
   - Fake socket: `websocket.Accept`, sending frames and then dropping.
   - Assert the board is kept and the status goes live→polling→stale→live.
   - Reconnect: the snapshot request is recorded after the subscribe ack, never before.
+  - Redial after DK's 30-min close, with the fake acking in 300 ms: the missed price arrives with the
+    post-ack snapshot at +0.3 s, `live` at +8.3 s. A hung redial releases snapshots at 1 s, a refused
+    one at once. A stale board gets no wait. A resync falling due neither flashes `stale` nor jumps
+    ahead of the ack. A lagging post-ack snapshot doesn't undo the new socket's frame.
   - Overlay: a snapshot cut before a frame → after commit, the frame's value wins.
   - Old frame, stale snapshot: F sets 110 at t=0, a snapshot requested at t=`snapshotLag`+1 returns
     100 → the board keeps 110, a counted miss, not `live`.
@@ -425,6 +434,8 @@ The `/healthz` body carries:
       `live`, resync on rejection, pongs counting as heard, the ack ending backoff).
     - Smoke run against DK from the home PC: `live` 8 s after the ack (the `snapshotLag` wait),
       32 games, zero misses.
+    - Follow-up (2026-09-24): the redial after DK's 30-min close (`TestRedial`). The old code fails 5
+      of its 7 cases, and removing any part of the change fails at least one.
 - [x] 5. **Server and page.** Write `sse.go`, `main.go` and `web/`.
   - Handoff: publish concurrently with many subscribes under `-race`. Every client's first message is
     `board`, and applying its patches in order gives the final board.
