@@ -1,69 +1,35 @@
 # dk-nfl-live
 
-A web page showing DraftKings Ontario's (`dkcaon`) current NFL main-line odds: spread, total and
-moneyline for every game, no alternate lines. It updates each price the moment DraftKings (DK) pushes a
-change. When DK is slow, down or sends something unexpected, the page keeps the last good odds on
-screen and labels them stale instead of going blank.
+A live board of DraftKings Ontario's NFL mainline odds (spread, total, moneyline). Prices update
+as DraftKings pushes a change. When DK is slow, down or sends something unexpected, the page
+keeps the last good odds on screen and labels them stale.
 
-One Go binary serves both the feed and the page. It needs no database, build step or config file.
+## How to run locally
 
-## Run it locally
-
-**Requirements:**
-- **Go 1.27** or newer (`winget install GoLang.Go` on Windows). `go.mod` sets the version.
-- **A network DK serves.** Everything so far was verified from a home connection in Toronto.
-  DK's CDN (Akamai) rejects some clients and IP ranges. If the snapshot gets a 403, see
-  "Troubleshooting" below.
+Requires Go 1.27+.
 
 ```bash
 go run .
 ```
 
-Open <http://localhost:8080>. The board fills within about a second and shows **LIVE** about 8 s
-later (see "How fresh are the odds?" for why).
+Open <http://localhost:8080>. `PORT` is the only setting (default `8080`).
 
-| URL | What it returns |
+| URL | Returns |
 |---|---|
 | `/` | The page |
-| `/events` | The Server-Sent Events stream the page reads |
-| `/healthz` | JSON health: state, sync, socket, frame counters, lag and delay. Returns 200 whenever the process is up |
+| `/events` | The SSE stream the page reads |
+| `/healthz` | JSON health (state, socket, snapshot errors, delay). 200 when the process is up |
 
-`PORT` is the only setting. It defaults to `8080`:
-
-```bash
-PORT=9000 go run .
-```
-
-**Tests:**
+If the board doesn't load, check `/healthz`. A `snapshotErr` with 403 means DK's CDN (Akamai)
+rejected your network.
 
 ```bash
 go vet ./...
 go test -race ./...
 ```
 
-- `-race` needs cgo, so on Windows it needs gcc (for example WinLibs). Without gcc, run
-  `go test ./...`.
-- `TestAppJS` runs the page's script against a fake DOM when `node` is on `PATH`, and is
-  skipped otherwise.
-- Every test runs against real DK payloads captured into `testdata/`, and none contacts DK.
-
-**Recording fresh DK traffic** (optional). This writes to `captures/`, which git ignores:
-
-```bash
-CAPTURE_LEAGUE=88808 CAPTURE_FOR=3h go test -tags capture -run TestCapture -timeout 0 -v
-```
-
-### Troubleshooting
-
-`/healthz` shows what the server sees:
-
-- **`snapshotErr` mentions 403.** Akamai rejected the snapshot request. It does that to clients and
-  networks it doesn't trust (curl gets a 403 where Go's stdlib client gets a 200). Try another
-  network.
-- **State stays `polling`.** The socket or the snapshot is failing. `socketErr` and `snapshotErr`
-  say which one. `misses` counts snapshots that disagreed with the socket.
-- **State is `stale`.** Neither the socket nor the snapshot has delivered fresh data for 15 s. The
-  page keeps showing the last good odds, dimmed.
+`-race` needs cgo (gcc on Windows); without it, run `go test ./...`. Tests use captured DK payloads
+in `testdata/` and never contact DK.
 
 ## How it works
 
@@ -73,167 +39,63 @@ DK REST snapshot  ── bootstrap, 60 s resync, 2 s polling when needed ─┐
 DK push WebSocket ── every price change, as it happens ───────────────┘   dk.go   board.go  sse.go         web/
 ```
 
-**Feed (`dk.go`).** It opens one WebSocket to DK and subscribes to the NFL main markets. DK's
-subscription is the same one DK's own site uses, taken from the snapshot's `subscriptionPartials`.
-- **Snapshot.** The socket only sends changes, so the feed also fetches DK's full-league REST
-  snapshot to get a starting board. It always subscribes before it fetches, so nothing published
-  between the two steps is lost.
-- **Scheduler.** Every snapshot request goes through one scheduler: one request in flight at a time,
-  starts at least 2 s apart, with backoff after failures. The triggers are bootstrap, reconnect, the
-  60 s resync, polling, and a bad frame.
-- **Health checks.** The socket is pinged every 15 s. A dead socket reconnects with jittered backoff
-  (0.5 s up to 15 s). DK also closes every socket after 30 min. The feed redials that one at once
-  and fetches the snapshot at the ack, so the snapshot covers the gap.
-
-**Board (`board.go`).** It holds DK's events, markets and selections in memory and turns them
-into one row per game.
-- **Applying changes.** DK sends each change as an `add`, `change` or `remove` of one entity. A
-  `change` merges only the fields DK sent. A line move replaces a selection with a new ID, and the
-  new ID keeps the fields DK didn't resend.
-- **All or nothing.** Every frame and every snapshot is validated, then committed whole or not at
-  all. A bad frame, or even a panic while applying it, leaves the board untouched and triggers a
-  resync. A snapshot that fails validation, or comes back empty while we hold games, is rejected.
-- **Home and away** come from DK's `venueRole`, never from list position.
-- **Odds.** DK writes negative odds with the Unicode minus `−`, which is normalised to `-`.
-- **Suspended markets** show a lock instead of a price.
-
-**Keeping the snapshot and the socket consistent.** DK's snapshot is cached and can trail the socket
-by a few seconds, so a snapshot fetched after a frame can still hold the older price.
-- **Evidence.** The feed keeps every value the current subscription delivered. When a snapshot
-  arrives, those values are laid over it, so a lagging snapshot never undoes a newer price.
-- **Synced.** The board only counts as synced when a snapshot cut at least 8 s after the subscribe
-  ack (`snapshotLag`) agrees with everything the socket delivered.
-- **Live.** The page shows **LIVE** only when the socket is healthy and the board is synced. The
-  full rules are in PROJECT_PLAN.md under "Ordering and consistency".
-
-**Hub (`sse.go`).** A single goroutine applies every frame and snapshot, then hands the changed
-rows to the Hub.
-- **Fan-out.** The Hub encodes each change once and queues it for every connected browser.
-- **New clients.** A new browser gets the full board (~10 KB) first, then every patch after it.
-  The board and the client list share one lock, so no patch is missed or repeated.
-- **Slow clients.** A browser whose 32-message buffer fills is dropped. It reconnects and gets a
-  fresh board, so one slow client never delays the others.
-- **Heartbeat.** A `status` event goes out every 15 s.
-
-**Page (`web/`).** Plain HTML and JavaScript embedded in the binary.
-- **Updates.** A `patch` event updates only the rows it names. Moved prices flash with ▲ or ▼ as
-  well as colour.
-- **Status bar.** It shows LIVE, Polling DK, Reconnecting or "Stale since hh:mm:ss", plus the
-  last update time and, while LIVE, an estimated typical delay from DK ("est. typical delay ~N ms",
-  with a tooltip on what it includes).
-- **Watchdog.** If the browser hears nothing for 35 s (the server is down or unreachable), it marks
-  the odds stale and reopens the stream itself. It never needs a reload.
-- **Security.** DK strings reach the page through `textContent` only, under a
-  `default-src 'self'` Content-Security-Policy.
-
-**How failures look to a viewer:**
-
-| What happened | What the page shows | How it recovers |
-|---|---|---|
-| DK closes the socket (it does this every 30 min) | Polling DK for ~8.5 s. Prices keep moving. | It redials at once, fetches a snapshot at the ack, then waits for a snapshot cut after the ack |
-| Socket down | Polling DK. Prices refresh from the snapshot every 2 s. | It reconnects with backoff |
-| Socket and snapshot both failing | "Stale since …" with dimmed prices. All games stay on screen. | It goes back to LIVE by itself |
-| DK sends a malformed frame | Nothing changes | The frame is rejected and the board resyncs |
-| Our server restarts | Reconnecting…, then Stale | The page reopens the stream and gets the full board |
-
-A local soak tested these cases for real. A 98 s network outage showed stale odds, never a blank
-board, and the page was LIVE again 10 s after the network came back. After a process kill and a
-manual restart, the open page recovered without a reload.
+- **Feed (`dk.go`)** holds one WebSocket to DK, subscribed to the NFL main markets. The socket only
+  sends changes, so a REST snapshot provides the starting board. All snapshot requests go through one
+  scheduler (one in flight, ≥ 2 s apart, backoff on failure).
+- **Board (`board.go`)** keeps DK's events, markets and selections in memory and builds one row per
+  game. Every frame and snapshot is validated as a whole or not at all. A bad one leaves
+  the board untouched and triggers a resync. Since DK's snapshot can trail the socket, values the
+  socket delivered are laid over each snapshot so it never rolls a price back.
+- **Hub (`sse.go`)** encodes each change once and sends it to every browser. A new browser gets the
+  full board, then patches. A browser that falls 32 messages behind is dropped and reconnects.
+- **Page (`web/`)** patches only the rows that changed. The status bar shows LIVE, Polling DK,
+  Reconnecting or "Stale since hh:mm:ss". If it hears nothing for 35 s it marks the odds stale and
+  reconnects on its own.
 
 ## Why this approach
 
-- **DK's push socket, not polling.** DK's snapshot is cached (`max-age=1`), so polling it can
-  never be faster than about 1 s. DK's origin also sometimes serves a snapshot 0.5–4.2 s behind the
-  socket (1–2% of 1,900 polls). The socket delivers a change tens of milliseconds after DK
-  publishes it, so the snapshot is used only for bootstrap, resync and fallback.
-- **No batching anywhere.** Every DK frame goes straight through to the browsers. Nothing
-  debounces, throttles or batches changes, and nothing on that path does disk or network I/O.
-- **Go.**
-  - One static binary with a small memory footprint (~25–60 MB during the soak).
-  - One cheap goroutine per viewer.
-  - A standard library covering HTTP, JSON, TLS, logging and file embedding.
-  - Go's stock TLS client gets through Akamai's check on the snapshot. There's only one outside
-    dependency, `coder/websocket`, for the DK socket.
-- **Server-Sent Events (SSE), not WebSockets, to the browser.** Data flows one way.
-  - SSE is plain HTTP, so it passes through proxies and CDNs.
-  - The browser's `EventSource` reconnects on its own.
-  - It needs no client library.
-- **Memory only, no database.** The board is 32 games. A restart rebuilds it from DK in about a
-  second, so there is nothing to persist. Odds history can be added later as a background writer
-  that never blocks the live path.
-- **Plain HTML and JavaScript.** It is one table. Patching single rows by ID is simpler and faster
-  than re-rendering through a framework, and there is no build step.
-- **Hosting in Toronto (Fly.io `yyz`).** The server should sit close to DK's Akamai edge (~7.5 ms
-  round trip from Toronto) and to Ontario viewers. Render's Ohio region, running the same image, is
-  the fallback if DK blocks Fly's IP addresses.
-- **Stale instead of blank.** A board with a clear "stale since" label is still useful. An empty
-  page is not.
+- **DK's WebSocket instead of polling.** DK's snapshot is cached (`max-age=1`) and sometimes lags the
+  socket by 0.5–4.2 s. The socket delivers a change tens of ms after DK publishes it.
+- **No batching.** Every DK frame goes straight to browsers, with no disk or network I/O on the way.
+- **Go.** One small static binary, a goroutine per viewer, and a stdlib covering HTTP, JSON and TLS.
+  One dependency: `coder/websocket`.
+- **SSE to the browser.** Data flows one way. SSE is plain HTTP, and `EventSource` reconnects by
+  itself with no client library.
+- **Memory only.** 32 games rebuild from DK in about a second after a restart.
+- **Plain HTML and JS.** It's one table; patching rows by ID needs no framework or build step.
+- **Hosting on Render (Ohio).** Fly.io Toronto (`yyz`) was the first choice, closest to DK's edge
+  and Ontario viewers. Testing it on 2026-09-24 showed DK returns 403 to Fly for both the snapshot
+  and the socket (an IP block, since both work from a home connection). The same image runs on
+  Render Ohio instead, at a cost of roughly 5 ms end to end.
 
 ## How fresh are the odds?
 
-**In short:** when the page says **LIVE**, a price is typically on screen about **50–250 ms after
-DK's system creates the change**. Almost all of that time is inside DK. This app adds about
-**1 ms of processing**, plus the network hops to DK and to your browser.
+When the page says **LIVE**, a price typically reaches the screen **50–250 ms after DK creates the
+change**. Almost all of that is inside DK; this app adds under 1 ms.
 
-### Timeline of one price change, with the page LIVE
+Measured 2026-09-23 from Toronto, using DK's timestamps in captured frames and `/healthz`:
 
-Measured on 2026-09-23 on a home PC in Toronto, using DK's own timestamps in the captured
-frames (`testdata/`) and the running server's `/healthz`.
-
-| # | Stage | Time | Source |
-|---|---|---|---|
-| 0 | A trader or model decides to move the line → DK creates the message | Unknown | DK exposes no timestamp before `createdTime` |
-| 1 | DK internal: `createdTime` → `receivedTime` | p50 7–8 ms · p95 9 ms | Frame metadata, all 3 leagues |
-| 2 | DK internal: `receivedTime` → `publishedTime` | p50 3–164 ms · p95 7–828 ms | Frame metadata. In-play NPB baseball is fast (3 / 7 ms); pre-game NFL (10 / 659 ms) and MLB (164 / 828 ms) are slower |
-| 3 | DK internal: `publishedTime` → WebSocket publish | p50 24–30 ms · p95 38–113 ms | Frame metadata vs `websocketPublishTimestamp` |
-| | **Total inside DK (1–3)** | **p50 41–220 ms · p95 88–950 ms** | NPB in-play 41 / 88 · NFL pre-game 48 / 690 · MLB pre-game 220 / 950 |
-| 4 | DK socket → our server (network) | ~5–20 ms (estimate) | Not measurable directly; see below |
-| 5 | Decode frame, apply to board, rebuild and diff rows, encode the SSE patch | **~0.18 ms** | Go benchmark over the NFL frames with a 32-game board |
-| 6 | Hub → browser connections | Microseconds | A non-blocking queue send, then an immediate flush. No buffering |
-| 7 | Server → browser (network) | <1 ms locally; a few ms from Fly `yyz` to a nearby viewer | Local run measured. Hosted not yet measured |
-| 8 | Browser: parse the patch, update one row, start the flash | <1 ms (estimate) | One small JSON object and a few `textContent` writes |
-
-**Notes on the timeline:**
-- **What the status bar shows.** "est. typical delay ~N ms" is the median over the last 1,024
-  frames of stages 1–3 (DK's own timestamps), plus half the socket ping round trip (stage 4), our
-  processing up to queueing the patch (5), and half the browser's round trip to our server (7).
-  No stage compares two clocks, so skew can't distort it. It's an estimate: halving round trips
-  assumes symmetric paths, and the SSE write and the browser drawing the change aren't counted.
-  Frames with missing or out-of-order DK timestamps, and any before the first ping, are left out
-  rather than counted as zero; the page shows nothing until its first browser probe finishes.
-  `/healthz` has it as `delayP50ms`/`delayP95ms`
-  (without stage 7) and `socketRttMs`.
-- **Stage 4 is hidden by clock skew.** `/healthz` reports `lagP50ms`: our receive time minus DK's
-  WebSocket publish time, over the last 1,024 frames. Tonight it read **p50 −34 ms, p95 −22 ms**.
-  It is negative because the home PC's clock is at least ~35 ms behind DK's, so skew hides the true
-  one-way time. The spread from p50 to p95 (~12 ms) is real network jitter. The ~5–20 ms estimate
-  comes from the measured round trips: ~7.5 ms to DK's Akamai edge and ~20 ms to AWS Ohio.
-- **The NFL numbers come from few frames.** They are pre-game and only 14 frames. NFL in-play
-  frames will be measured on the next game day.
-- **The two sides of a market can arrive apart.** DK sends each side of a market (for example the
-  over and the under) as its own message, up to ~100 ms apart. So the page can briefly show one
-  side moved before the other.
-
-### When the page is not LIVE
-
-The status bar always says which mode it is in:
-
-| Status | How old a price can be | Why |
+| # | Stage | Time |
 |---|---|---|
-| **LIVE** | As in the timeline above | The socket is healthy and the board is synced |
-| **Polling DK**, after a reconnect (DK closes the socket every 30 min) | Still per frame once the new subscription is acked, about 0.3 s after the close. What changed in between comes with the snapshot fetched at the ack, or the next one 2 s later if DK's snapshot lags | It shows Polling for ~8.5 s only until a snapshot cut after the ack confirms the board (`snapshotLag` = 8 s) |
-| **Polling DK**, socket down | Usually ≤ ~2.3 s: a 2 s poll interval plus a 125–260 ms fetch. Up to ~6.5 s when DK's snapshot itself lags (0.5–4.2 s, in 1–2% of polls) | Prices come from the REST snapshot only |
-| **Stale since hh:mm:ss** | Anything since that time; prices are dimmed | Neither source has been fresh for 15 s, or the browser heard nothing from our server for 35 s |
+| 1 | DK: `createdTime` → `receivedTime` | p50 7–8 ms · p95 9 ms |
+| 2 | DK: `receivedTime` → `publishedTime` | p50 3–164 ms · p95 7–828 ms (in-play fastest; NFL pre-game 10 / 659 ms) |
+| 3 | DK: `publishedTime` → WebSocket publish | p50 24–30 ms · p95 38–113 ms |
+| | **Inside DK (1–3)** | **p50 41–220 ms · p95 88–950 ms** (NFL pre-game 48 / 690 ms) |
+| 4 | DK socket → our server | ~5–20 ms (estimated from round trips; clock skew hides one-way time) |
+| 5 | Decode, apply, diff, encode the patch | ~0.18 ms (benchmark, 32-game board) |
+| 6 | Hub → browser connections | µs (non-blocking queue, immediate flush) |
+| 7 | Server → browser | a few ms to nearby viewers |
+| 8 | Browser updates one row | < 1 ms |
 
-**Recovery times measured in the local soak:**
-- **After a 98 s network outage:** LIVE 10 s after connectivity returned.
-- **After a process kill and manual restart:** LIVE 14 s after the restart.
-- **After each of DK's 30-min socket closes:** about 9 s of Polling, with prices still streaming.
-  That was before the immediate redial; ~8.5 s is expected now, not yet measured.
+- NFL figures come from only 14 pre-game frames; in-play NFL is still to be measured.
+- DK sends each side of a market separately, up to ~100 ms apart, so one side can briefly move first.
+- The status bar's "est. typical delay ~N ms" is the median of stages 1–3 plus half the round trips
+  for stages 4 and 7, plus stage 5. It never compares two clocks, so skew can't distort it.
 
-### Reading the status bar
+When the page is not LIVE:
 
-- **"updated hh:mm:ss"** is when your browser last received a price change.
-- **"DK lag N ms"** is the server's median receive time minus DK's publish time, which is stage 4
-  plus clock skew. A value near zero or negative just means the server's clock trails DK's. Watch it
-  for changes, not for its absolute value.
+| Status | How old a price can be |
+|---|---|
+| **Polling DK** after DK's 30-min socket close | Still per frame; shows Polling ~8.5 s until a snapshot confirms the board |
+| **Polling DK**, socket down | Usually ≤ ~2.3 s (2 s poll + fetch); up to ~6.5 s if DK's snapshot lags |
+| **Stale since hh:mm:ss** | Anything since that time; prices dimmed |

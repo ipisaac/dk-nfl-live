@@ -12,9 +12,8 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
 | Feed | **Ontario** (`dkcaon`) | This is what the linked DK page shows from Toronto |
 | Host | **Fly.io `yyz`** after a probe shows DK accepts Fly's IPs; otherwise **Render Starter (Ohio)** with the same image | Toronto vs Ohio differs by only ~5 ms end to end; the probe decides |
 | Dev | Home PC on localhost; first public URL is Fly | Proven DK access from here. Cloudflare quick tunnels don't support SSE, and a named tunnel would need another account |
-| Prior art | `odds-scraper-pg` **not reused** | Batch polling, so its latency floor is the poll interval; only its DK lessons carry over |
 
-## DK facts (verified 2026-09-22 from the home PC)
+## DK facts (verified on 2026-09-22)
 
 ### Snapshot
 `GET https://sportsbook-nash.draftkings.com/api/sportscontent/dkcaon/v1/leagues/88808`
@@ -27,7 +26,7 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
   `main:true`.
 - A league with no events returns **404**, not an empty body. We treat it as a failed snapshot.
 - Has 192 selections, each with `outcomeType` (Home/Away/Over/Under), `points`, `trueOdds` and
-  `displayOdds.american` (⚠ uses U+2212 for minus). Main lines carry the tag `MainPointLine`.
+  `displayOdds.american` (uses U+2212 for minus). Main lines carry the tag `MainPointLine`.
 - The snapshot also publishes its own socket subscription.
   `subscriptionPartials["league-events-88808"]` =
   `{entity:"events", query:"$filter=leagueId eq '88808' and clientMetadata/Subcategories/any(s: s/Id eq '4518')&$orderBy=startEventDate asc", includeMarkets:"$filter=tags/all(t: t ne 'SportcastBetBuilder') and clientMetadata/subCategoryId eq '4518'"}`
