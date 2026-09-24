@@ -71,7 +71,9 @@ DK push WebSocket ── every price change, as it happens ───────
   and Ontario viewers. Testing it on 2026-09-24 showed DK returns 403 to Fly for both the snapshot
   and the socket (an IP block, since both work from a home connection). The same image runs on
   Render Ohio instead, at a cost of roughly 5 ms end to end. Render isn't blocked, but its
-  snapshot requests pass Akamai only with a Node-like TLS handshake and `br` offered.
+  snapshot requests pass Akamai only with a Node-like TLS handshake and `br` offered. It runs on
+  Render's free instance, which sleeps after 15 minutes without incoming requests; an uptime
+  monitor requests `/healthz` every 5 minutes to keep it awake.
 
 ## How fresh are the odds?
 

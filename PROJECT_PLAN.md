@@ -11,8 +11,8 @@ The page updates itself as DK moves lines and survives DK being unreachable or r
 | Stack | **Go**: stdlib `net/http`, `log/slog`, `embed`; `github.com/coder/websocket` | Single binary, cheap goroutine fan-out, fast JSON; chosen over TS/Node and Elixir after comparison |
 | TLS | `github.com/refraction-networking/utls`, snapshot client only | From Render, Akamai 403s the snapshot unless the ClientHello is Node's *and* `br` is offered; stdlib `crypto/tls` can't set the hello |
 | Feed | **Ontario** (`dkcaon`) | This is what the linked DK page shows from Toronto |
-| Host | **Fly.io `yyz`** after a probe shows DK accepts Fly's IPs; otherwise **Render Starter (Ohio)** with the same image | Toronto vs Ohio differs by only ~5 ms end to end; the probe decides |
-| Dev | Home PC on localhost; first public URL is Fly | Proven DK access from here. Cloudflare quick tunnels don't support SSE, and a named tunnel would need another account |
+| Host | **Render Free (Ohio)**, Docker, kept awake by an external uptime monitor hitting `/healthz` every 5 min | DK blocks Fly's IPs (tested in `yyz`). Free spins down after 15 min without *inbound* requests, and SSE is outbound, so open pages don't keep it up. One always-on service uses ≤ 744 of the 750 free hours a month. Upgrade to Starter if Free's restarts or limits bite |
+| Dev | Home PC on localhost; first public URL is Render | Proven DK access from here. Cloudflare quick tunnels don't support SSE, and a named tunnel would need another account |
 
 ## DK facts (verified on 2026-09-22)
 
@@ -130,7 +130,7 @@ Flat layout, all `package main`.
 | `web/index.html`, `web/app.js` | The page |
 | `*_test.go`, `testdata/` | Real captured payloads + fault injection. `testdata/<league>-{start,end}.json` are snapshots, and `<league>-frames.jsonl` holds the raw update messages between them |
 | `capture_test.go` | Build tag `capture`: records a league's frames and distinct snapshots into `captures/` (gitignored) |
-| `Dockerfile`, `fly.toml` | `golang` build → `distroless/static`; Fly config |
+| `Dockerfile` | `golang` build → `distroless/static`; Render builds it and sets `PORT` |
 
 ### Constants
 - `site="dkcaon"`, `leagueID="88808"`, `subcategoryID="4518"`, plus the snapshot and socket URLs.
@@ -486,7 +486,8 @@ The `/healthz` body carries:
       page went stale at 18:24:05 ("Stale since …", prices dimmed) and kept all 32 games. DK was
       reachable again at 18:25:28; the server resubscribed once (`subscriptions` 10 → 11), polled,
       and the open page was LIVE at 18:25:37.8, about 10 s later, with no reload.
-- [ ] 7. **Deploy to Fly and go public.**
+- [ ] 7. **Deploy and go public.** Planned for Fly `yyz`; DK blocks Fly, so it runs on Render Ohio
+  Free (<https://dk-nfl-live.onrender.com/>). The Fly app is destroyed and `fly.toml` removed.
   - `fly.toml`: `primary_region="yyz"`, `internal_port=8080`, `force_https`,
     `auto_stop_machines="off"`, `min_machines_running=1`, a `/healthz` check, `shared-cpu-1x` 256 MB,
     one machine.
@@ -533,11 +534,12 @@ The `/healthz` body carries:
     `http/1.1` only), offers `br, gzip, deflate` and gunzips by hand. **Render is `live`** with it:
     synced, subscribed, frames applied, lag p50 ~18 ms, socket RTT ~36 ms. Probes removed and the
     image is distroless again.
+  - The user sets up an external uptime monitor on `/healthz` every 5 min, so Free never spins down.
   - From a phone on cellular: the board streams and prices move; then airplane mode for 60 s →
     stale banner, and back → live.
   - Automatic restart: kill the process on the machine; the platform restarts it on its own and an
     open page returns to live without a reload.
-  - Repeat the step-6 soak through the public URL, to cover Fly's proxy (buffering, idle timeouts).
+  - Repeat the step-6 soak through the public URL, to cover Render's proxy (buffering, idle timeouts).
 
 ## Verification
 1. `go vet ./...` and `go test -race ./...` pass.
@@ -551,9 +553,9 @@ The `/healthz` body carries:
      the ack). Prices move as soon as the socket is back.
    - Process killed: once it's back (restarted by hand locally, by the platform when hosted), the
      open page returns to live without a reload.
-5. The Fly URL works on a phone on cellular, including recovery after an outage.
-6. 1 h soak, locally and again through Fly: no reconnect loop, memory flat, heartbeats every 15 s.
-7. The same checks pass on Fly (or on Render as the fallback).
+5. The Render URL works on a phone on cellular, including recovery after an outage.
+6. 1 h soak, locally and again through Render: no reconnect loop, memory flat, heartbeats every 15 s.
+7. The same checks pass on Render.
 
 ## Deliberately skipped (add when needed)
 - **Odds history / ClickHouse.** Add it as a background batch writer hooked where `Feed` publishes.
@@ -563,5 +565,5 @@ The `/healthz` body carries:
 - **SSE replay / `Last-Event-ID`.** The board is ~10 KB; add replay if it grows.
 - **Frontend framework.** Add one if the UI outgrows a single table.
 - **Config system.** Add it when a second league or region is real.
-- **`render.yaml`.** Only needed if the Fly probe fails.
-- **Second Fly machine.** Add it for zero-downtime deploys.
+- **`render.yaml`.** The service is configured in Render's dashboard; add it if the setup needs to be reproducible.
+- **Paid instance.** Render Starter removes spin-down and Free's random restarts; add it if they bite.
