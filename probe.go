@@ -52,8 +52,6 @@ func init() {
 		run  func(context.Context, *probeResult) error
 	}{
 		{"A current client", probeCurrent},
-		{"B net/http + Node header set", probeNodeHeaders},
-		{"C Go TLS + raw Node bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, false) }},
 		{"D Node ClientHello + raw Node bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, true) }},
 	}
 	for i, p := range probes {
