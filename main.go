@@ -26,7 +26,7 @@ func main() {
 
 	feed, hub := NewFeed(), NewHub()
 	feed.OnPatch, feed.OnStatus = hub.Publish, hub.SetStatus
-	hub.Lag = func() float64 { return feed.Health().LagP50ms }
+	hub.Delay = func() float64 { return feed.Health().DelayP50ms }
 
 	port := os.Getenv("PORT")
 	if port == "" {

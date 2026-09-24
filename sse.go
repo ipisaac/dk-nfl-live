@@ -19,7 +19,7 @@ const (
 // Hub fans board changes out to SSE clients. Rows and clients share one mutex, so a new client's
 // board and the patches after it can't miss or repeat a change; see PROJECT_PLAN.md "Fan-out".
 type Hub struct {
-	Lag func() float64 // DK lag p50 in ms, for the status line
+	Delay func() float64 // p50 ms from DK creating a change to it leaving us, for the status line
 
 	mu      sync.Mutex
 	rows    map[string]Row
@@ -33,7 +33,7 @@ func NewHub() *Hub {
 
 type statusEvent struct {
 	Status
-	LagP50ms float64 `json:"lagP50ms,omitempty"`
+	DelayP50ms float64 `json:"delayP50ms,omitempty"`
 }
 
 type boardEvent struct {
@@ -89,8 +89,8 @@ func (h *Hub) broadcast(msg []byte) {
 
 func (h *Hub) statusEvent() statusEvent {
 	ev := statusEvent{Status: h.status}
-	if h.Lag != nil {
-		ev.LagP50ms = h.Lag()
+	if h.Delay != nil {
+		ev.DelayP50ms = h.Delay()
 	}
 	return ev
 }

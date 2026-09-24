@@ -26,7 +26,7 @@ later (see "How fresh are the odds?" for why).
 |---|---|
 | `/` | The page |
 | `/events` | The Server-Sent Events stream the page reads |
-| `/healthz` | JSON health: state, sync, socket, frame counters and DK lag. Returns 200 whenever the process is up |
+| `/healthz` | JSON health: state, sync, socket, frame counters, lag and delay. Returns 200 whenever the process is up |
 
 `PORT` is the only setting. It defaults to `8080`:
 
@@ -118,7 +118,8 @@ rows to the Hub.
 - **Updates.** A `patch` event updates only the rows it names. Moved prices flash with ▲ or ▼ as
   well as colour.
 - **Status bar.** It shows LIVE, Polling DK, Reconnecting or "Stale since hh:mm:ss", plus the
-  last update time and DK's lag.
+  last update time and, while LIVE, an estimated typical delay from DK ("est. typical delay ~N ms",
+  with a tooltip on what it includes).
 - **Watchdog.** If the browser hears nothing for 35 s (the server is down or unreachable), it marks
   the odds stale and reopens the stream itself. It never needs a reload.
 - **Security.** DK strings reach the page through `textContent` only, under a
@@ -192,6 +193,15 @@ frames (`testdata/`) and the running server's `/healthz`.
 | 8 | Browser: parse the patch, update one row, start the flash | <1 ms (estimate) | One small JSON object and a few `textContent` writes |
 
 **Notes on the timeline:**
+- **What the status bar shows.** "est. typical delay ~N ms" is the median over the last 1,024
+  frames of stages 1–3 (DK's own timestamps), plus half the socket ping round trip (stage 4), our
+  processing up to queueing the patch (5), and half the browser's round trip to our server (7).
+  No stage compares two clocks, so skew can't distort it. It's an estimate: halving round trips
+  assumes symmetric paths, and the SSE write and the browser drawing the change aren't counted.
+  Frames with missing or out-of-order DK timestamps, and any before the first ping, are left out
+  rather than counted as zero; the page shows nothing until its first browser probe finishes.
+  `/healthz` has it as `delayP50ms`/`delayP95ms`
+  (without stage 7) and `socketRttMs`.
 - **Stage 4 is hidden by clock skew.** `/healthz` reports `lagP50ms`: our receive time minus DK's
   WebSocket publish time, over the last 1,024 frames. Tonight it read **p50 −34 ms, p95 −22 ms**.
   It is negative because the home PC's clock is at least ~35 ms behind DK's, so skew hides the true

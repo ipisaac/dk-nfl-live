@@ -39,8 +39,11 @@ function load() {
     now = end;
   }
 
-  vm.runInNewContext(src, { document, EventSource, setTimeout, clearTimeout });
-  return { state: () => document.body.dataset.state, sources, latest: () => sources.at(-1), advance };
+  const probes = [];
+  const fetch = () => new Promise((resolve) => probes.push(() => { now += 20; resolve(); }));
+  const performance = { now: () => now };
+  vm.runInNewContext(src, { document, EventSource, setTimeout, clearTimeout, fetch, performance, AbortSignal });
+  return { state: () => document.body.dataset.state, detail: () => els.detail.textContent, sources, latest: () => sources.at(-1), advance, probes };
 }
 
 const live = { rows: [], status: { state: "live" } };
@@ -83,4 +86,15 @@ const live = { rows: [], status: { state: "live" } };
   assert.strictEqual(p.state(), "live");
 }
 
-console.log("ok");
+// The delay shows only once the browser has measured its round trip, and probes never overlap.
+(async () => {
+  const p = load();
+  p.latest().emit("board", { rows: [], status: { state: "live", delayP50ms: 50 } });
+  p.latest().emit("status", { state: "live", delayP50ms: 50 });
+  assert.strictEqual(p.detail(), "");
+  assert.strictEqual(p.probes.length, 1);
+  p.probes[0]();
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(p.detail(), "est. typical delay ~60 ms");
+  console.log("ok");
+})().catch((e) => { console.error(e); process.exit(1); });

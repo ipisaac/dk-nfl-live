@@ -138,6 +138,32 @@ func TestOverlay(t *testing.T) {
 	want(t, f, "+110", true)
 }
 
+// The delay adds DK's internal time and half the socket round trip, never our clock against DK's.
+func TestDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := syncedFeed(t)
+		frame := func(price, created string) {
+			data := strings.Replace(priceFrame(price), `{"data":`, `{"metadata":{"createdTime":`+created+`},"data":`, 1)
+			f.onFrame(frameMsg{sub: 1, data: json.RawMessage(data), recv: time.Now(), published: sec(9.05)})
+		}
+		frame("+110", `"2026-09-27T17:00:09Z"`)
+		if got := f.Health().DelayP50ms; got != 0 {
+			t.Fatalf("delay %v ms before any ping", got)
+		}
+		f.handle(heardMsg{sub: 1, at: sec(9), rtt: 20 * time.Millisecond})
+		frame("+115", `"not a time"`)
+		want(t, f, "+115", true)
+		frame("+120", `"2026-09-27T17:00:10Z"`) // after publishing
+		if got := f.Health().DelayP50ms; got != 0 {
+			t.Fatalf("delay %v ms from bad timestamps", got)
+		}
+		frame("+125", `"2026-09-27T17:00:09Z"`)
+		if got := f.Health().DelayP50ms; got != 60 {
+			t.Fatalf("delay %v ms, want 50 (DK) + 10 (socket) + 0 (fake clock)", got)
+		}
+	})
+}
+
 func TestStaleSnapshot(t *testing.T) {
 	f := syncedFeed(t)
 	onFrame(f, 10, priceFrame("+110"))

@@ -287,7 +287,10 @@ The `/healthz` body carries:
 - socket state and last error
 - frames applied and entities skipped
 - synced, `resyncFrom`, and content-check misses
-- **lag p50/p95**, where lag = receive time − `websocketPublishTimestamp`
+- **lag p50/p95**, where lag = receive time − `websocketPublishTimestamp` (includes clock skew; diagnostic only)
+- **delay p50/p95**, where delay = `websocketPublishTimestamp` − `createdTime` + socket ping RTT/2 +
+  our processing. No cross-clock comparison, so skew can't make it negative. Skipped until the first
+  ping, and for frames whose `createdTime` is missing, malformed or after the publish time.
 
 ### Fan-out (`sse.go`)
 - **Events**: `board` (full, ~10 KB) on connect, then `patch` (changed/removed games) and `status`.
@@ -311,7 +314,9 @@ The `/healthz` body carries:
   if only it moved). Suspended cells are greyed and show 🔒 instead of a price.
 - **Reconnect**: a `board` event patches the rows already shown, so moves across the gap still flash.
 - **Status bar** (`role="status"`): LIVE / Polling / Stale since … / Reconnecting, the last update
-  time, and DK lag p50.
+  time, and, while LIVE, "est. typical delay ~N ms": delay p50 plus half the browser's round trip
+  to us (a `HEAD /healthz` on each `board` and `status` event, 5 s timeout, one at a time), shown
+  only once both are measured. A tooltip lists what it includes and excludes.
 - **CSP**: CSS inline in `index.html`, JS in `app.js`.
 - **Watchdog**: every event, including the 15 s `status`, resets a 35 s timer on the browser's own
   clock.

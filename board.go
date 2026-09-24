@@ -93,6 +93,7 @@ type updateData struct {
 			Selections []string `json:"selections"`
 		} `json:"remove"`
 	} `json:"data"`
+	Metadata json.RawMessage `json:"metadata"` // timing only; see dkTime
 }
 
 var errEnvelope = errors.New("no data.add, data.change and data.remove")

@@ -2,6 +2,9 @@
 // DK strings reach the DOM through textContent only.
 
 const WATCHDOG_MS = 35000;
+const DELAY_NOTE = "Median over recent DK updates, estimated without comparing clocks: DK's own processing, " +
+  "half of each network round trip, and our server's processing. Excludes uneven network paths, " +
+  "the stream write and your browser drawing the change. Not the age of any one price.";
 const MARKETS = [["spread", "away", "home"], ["total", "over", "under"], ["moneyline", "away", "home"]];
 
 const table = document.getElementById("games");
@@ -13,6 +16,7 @@ const games = new Map(); // id → {tb, r}
 let server = { state: "connecting" }; // the last status the server sent
 let conn = "open"; // open | reconnecting | timeout (browser-side)
 let lastEvent = null, lastMove = null, es = null, watchdog = 0, retry = 0;
+let rtt = null, probing = false; // browser ↔ server round trip, ms; null until measured
 
 const clock = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 
@@ -160,9 +164,26 @@ function render() {
 
   const parts = [];
   if (lastMove) parts.push("updated " + clock(lastMove));
-  if (server.lagP50ms) parts.push("DK lag " + Math.round(server.lagP50ms) + " ms");
+  const delay = state === "live" && server.delayP50ms && rtt != null;
+  if (delay) parts.push("est. typical delay ~" + Math.round(server.delayP50ms + rtt / 2) + " ms");
   detailEl.textContent = parts.join(" · ");
+  detailEl.title = delay ? DELAY_NOTE : "";
   emptyEl.hidden = games.size > 0 || server.state === "connecting";
+}
+
+// Half a round trip estimates the server → browser hop without comparing our clock to the server's.
+async function probe() {
+  if (probing) return;
+  probing = true;
+  const start = performance.now();
+  try {
+    await fetch("/healthz", { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(5000) });
+    rtt = performance.now() - start;
+  } catch {
+  } finally {
+    probing = false;
+  }
+  render();
 }
 
 function heard() {
@@ -196,9 +217,9 @@ function connect() {
   clearTimeout(retry);
   if (es) es.close();
   es = new EventSource("/events");
-  on("board", onBoard);
+  on("board", (b) => { onBoard(b); probe(); });
   on("patch", onPatch);
-  on("status", (s) => { server = s; });
+  on("status", (s) => { server = s; probe(); });
   es.onerror = () => {
     if (conn === "open") conn = "reconnecting";
     render();

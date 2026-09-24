@@ -194,6 +194,9 @@ type Health struct {
 	Misses        int       `json:"misses"`
 	LagP50ms      float64   `json:"lagP50ms"`
 	LagP95ms      float64   `json:"lagP95ms"`
+	DelayP50ms    float64   `json:"delayP50ms"`
+	DelayP95ms    float64   `json:"delayP95ms"`
+	SocketRTTms   float64   `json:"socketRttMs"`
 }
 
 // Messages to the apply goroutine, in arrival order.
@@ -210,6 +213,7 @@ type (
 	heardMsg struct {
 		sub int
 		at  time.Time
+		rtt time.Duration // a ping's round trip; 0 for other messages
 	}
 	lostMsg struct {
 		sub int
@@ -252,11 +256,12 @@ type Feed struct {
 	drift      int
 	status     Status
 	h          Health
+	socketRTT  time.Duration
 
 	mu     sync.Mutex
 	shared Health
-	lags   [1024]time.Duration
-	nLags  int
+	lags   durations
+	delays durations
 }
 
 func NewFeed() *Feed { return newFeed(snapshotURL, socketURL, dkClient) }
@@ -307,6 +312,10 @@ func (f *Feed) handle(m any) {
 	case heardMsg:
 		if m.sub == f.sub {
 			f.lastHeard = m.at
+			if m.rtt > 0 {
+				f.socketRTT = m.rtt
+				f.h.SocketRTTms = ms(m.rtt)
+			}
 		}
 	case lostMsg:
 		f.onLost(m.sub, m.err)
@@ -342,7 +351,7 @@ func (f *Feed) onFrame(m frameMsg) {
 	}
 	f.lastHeard = m.recv
 	if !m.published.IsZero() {
-		f.recordLag(m.recv.Sub(m.published))
+		f.record(&f.lags, m.recv.Sub(m.published))
 	}
 	before := f.board.selections
 	u, err := decodeUpdate(m.data)
@@ -364,6 +373,25 @@ func (f *Feed) onFrame(m frameMsg) {
 		f.needResync(m.recv)
 	}
 	f.publish(changed)
+	// From DK creating the change to it leaving us, without comparing clocks: DK's own two
+	// timestamps, half the socket round trip, and our processing. No sample until a ping has
+	// measured the round trip.
+	if d, ok := dkTime(u.Metadata, m.published); ok && f.socketRTT > 0 {
+		f.record(&f.delays, d+f.socketRTT/2+time.Since(m.recv))
+	}
+}
+
+// dkTime is how long DK took from creating a change to publishing it, both on DK's clock. Missing,
+// malformed or out-of-order timestamps skip the measurement, never the odds.
+func dkTime(metadata json.RawMessage, published time.Time) (time.Duration, bool) {
+	var md struct {
+		CreatedTime time.Time `json:"createdTime"`
+	}
+	if json.Unmarshal(metadata, &md) != nil || md.CreatedTime.IsZero() || published.IsZero() {
+		return 0, false
+	}
+	d := published.Sub(md.CreatedTime)
+	return d, d >= 0
 }
 
 func (f *Feed) needResync(from time.Time) {
@@ -512,10 +540,31 @@ func laterOf(a, b time.Time) time.Time {
 	return b
 }
 
-func (f *Feed) recordLag(d time.Duration) {
+// durations keeps the last 1,024 samples.
+type durations struct {
+	d [1024]time.Duration
+	n int
+}
+
+func (r *durations) sorted() []time.Duration {
+	s := slices.Clone(r.d[:min(r.n, len(r.d))])
+	slices.Sort(s)
+	return s
+}
+
+func percentiles(s []time.Duration) (p50, p95 float64) {
+	if len(s) == 0 {
+		return 0, 0
+	}
+	return ms(s[(len(s)-1)*50/100]), ms(s[(len(s)-1)*95/100])
+}
+
+func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+
+func (f *Feed) record(r *durations, d time.Duration) {
 	f.mu.Lock()
-	f.lags[f.nLags%len(f.lags)] = d
-	f.nLags++
+	r.d[r.n%len(r.d)] = d
+	r.n++
 	f.mu.Unlock()
 }
 
@@ -523,13 +572,10 @@ func (f *Feed) recordLag(d time.Duration) {
 func (f *Feed) Health() Health {
 	f.mu.Lock()
 	h := f.shared
-	lags := slices.Clone(f.lags[:min(f.nLags, len(f.lags))])
+	lags, delays := f.lags.sorted(), f.delays.sorted()
 	f.mu.Unlock()
-	if len(lags) > 0 {
-		slices.Sort(lags)
-		ms := func(p int) float64 { return float64(lags[(len(lags)-1)*p/100]) / float64(time.Millisecond) }
-		h.LagP50ms, h.LagP95ms = ms(50), ms(95)
-	}
+	h.LagP50ms, h.LagP95ms = percentiles(lags)
+	h.DelayP50ms, h.DelayP95ms = percentiles(delays)
 	return h
 }
 
@@ -628,7 +674,7 @@ func (f *Feed) read(ctx context.Context, conn *websocket.Conn, sub int) error {
 		}
 		var m socketMessage
 		if json.Unmarshal(raw, &m) == nil && m.Event != "update" {
-			f.send(ctx, heardMsg{sub, recv})
+			f.send(ctx, heardMsg{sub: sub, at: recv})
 			continue
 		}
 		var published time.Time
@@ -651,13 +697,14 @@ func (f *Feed) ping(ctx context.Context, cancel context.CancelCauseFunc, conn *w
 			}
 		case <-t.C:
 			pingCtx, done := context.WithTimeout(ctx, netTimeout)
+			start := time.Now()
 			err := conn.Ping(pingCtx)
 			done()
 			if err != nil {
 				cancel(fmt.Errorf("ping: %w", err))
 				return
 			}
-			f.send(ctx, heardMsg{sub, time.Now()})
+			f.send(ctx, heardMsg{sub, time.Now(), time.Since(start)})
 		}
 	}
 }
