@@ -1,6 +1,6 @@
 package main
 
-// Throwaway: runs once at startup, before the feed, to find which snapshot request Akamai accepts on Render.
+// Throwaway: runs once at startup, before the feed, to find why Akamai on Render accepts Node but not Go.
 
 import (
 	"bufio"
@@ -10,11 +10,14 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -42,23 +45,32 @@ type probeResult struct {
 	remote, alpn  string
 }
 
-// Runs in init so no production snapshot request overlaps the probes.
+// Runs in init so the feed's snapshot requests can't overlap the probes. Go and Node alternate,
+// and D repeats at Node's edge IP, to separate client, edge and ordering effects.
 func init() {
 	if testing.Testing() {
 		return
 	}
+	var nodeEdge string
 	probes := []struct {
 		name string
 		run  func(context.Context, *probeResult) error
 	}{
+		{"D uTLS Node hello + Node bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, probeHost+":443") }},
+		{"N Node 22.20 fetch", func(ctx context.Context, r *probeResult) error {
+			err := probeNode(ctx, r)
+			nodeEdge = r.remote
+			return err
+		}},
+		{"D at Node's edge", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, nodeEdge) }},
+		{"N Node 22.20 fetch", probeNode},
 		{"A current client", probeCurrent},
-		{"D Node ClientHello + raw Node bytes", func(ctx context.Context, r *probeResult) error { return probeRaw(ctx, r, true) }},
 	}
 	for i, p := range probes {
 		if i > 0 {
 			time.Sleep(3 * time.Second)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		var r probeResult
 		err := p.run(ctx, &r)
 		cancel()
@@ -66,6 +78,15 @@ func init() {
 			"remote", r.remote, "alpn", r.alpn, "err", err)
 	}
 	time.Sleep(3 * time.Second)
+}
+
+func probeNode(ctx context.Context, r *probeResult) error {
+	out, err := exec.CommandContext(ctx, "node", "/probe.mjs").CombinedOutput()
+	line := strings.TrimSpace(string(out))
+	if _, err := fmt.Sscanf(line, "status=%d bytes=%d json=%t remote=%s", &r.status, &r.bytes, &r.json, &r.remote); err != nil {
+		return fmt.Errorf("%q: %w", line, err)
+	}
+	return err
 }
 
 func traceConn(ctx context.Context, r *probeResult) context.Context {
@@ -86,63 +107,38 @@ func probeCurrent(ctx context.Context, r *probeResult) error {
 	return nil
 }
 
-func probeNodeHeaders(ctx context.Context, r *probeResult) error {
-	req, _ := http.NewRequestWithContext(traceConn(ctx, r), http.MethodGet, snapshotURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
-	req.Header.Set("Origin", dkOrigin)
-	req.Header.Set("Referer", dkOrigin+"/")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
-	resp, err := dkClient.Do(req)
-	if err != nil {
-		return err
+func probeRaw(ctx context.Context, r *probeResult, addr string) error {
+	if addr == "" {
+		return errors.New("no address")
 	}
-	return readProbe(resp, r)
-}
-
-func probeRaw(ctx context.Context, r *probeResult, nodeHello bool) error {
 	var d net.Dialer
-	raw, err := d.DialContext(ctx, "tcp", probeHost+":443")
+	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(10 * time.Second))
 	r.remote = raw.RemoteAddr().String()
-	var conn net.Conn
-	if nodeHello {
-		uc := utls.UClient(raw, &utls.Config{ServerName: probeHost}, utls.HelloCustom)
-		b, err := hex.DecodeString(strings.TrimSpace(nodeHelloHex))
-		if err != nil {
-			return err
-		}
-		spec, err := (&utls.Fingerprinter{AllowBluntMimicry: true}).FingerprintClientHello(b)
-		if err != nil {
-			return err
-		}
-		if err := uc.ApplyPreset(spec); err != nil {
-			return err
-		}
-		if err := uc.HandshakeContext(ctx); err != nil {
-			return err
-		}
-		r.alpn = uc.ConnectionState().NegotiatedProtocol
-		conn = uc
-	} else {
-		tc := tls.Client(raw, &tls.Config{ServerName: probeHost, NextProtos: []string{"http/1.1"}})
-		if err := tc.HandshakeContext(ctx); err != nil {
-			return err
-		}
-		r.alpn = tc.ConnectionState().NegotiatedProtocol
-		conn = tc
-	}
-	if _, err := io.WriteString(conn, nodeRequest); err != nil {
+	uc := utls.UClient(raw, &utls.Config{ServerName: probeHost}, utls.HelloCustom)
+	b, err := hex.DecodeString(strings.TrimSpace(nodeHelloHex))
+	if err != nil {
 		return err
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	spec, err := (&utls.Fingerprinter{AllowBluntMimicry: true}).FingerprintClientHello(b)
+	if err != nil {
+		return err
+	}
+	if err := uc.ApplyPreset(spec); err != nil {
+		return err
+	}
+	if err := uc.HandshakeContext(ctx); err != nil {
+		return err
+	}
+	r.alpn = uc.ConnectionState().NegotiatedProtocol
+	if _, err := io.WriteString(uc, nodeRequest); err != nil {
+		return err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(uc), nil)
 	if err != nil {
 		return err
 	}
