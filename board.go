@@ -17,10 +17,23 @@ import (
 // DK wire types keep only the fields we use. Fields DK may omit or null (the snapshot omits a false
 // isSuspended) are pointers.
 type event struct {
-	ID             string        `json:"id"`
-	StartEventDate time.Time     `json:"startEventDate"`
-	Status         string        `json:"status"`
-	Participants   []participant `json:"participants"`
+	ID             string         `json:"id"`
+	StartEventDate time.Time      `json:"startEventDate"`
+	Status         string         `json:"status"`
+	Participants   []participant  `json:"participants"`
+	LiveGameState  *liveGameState `json:"liveGameState"`
+	EventScore     *eventScore    `json:"eventScore"` // frames only; snapshots never carry it
+}
+
+type liveGameState struct {
+	Period string `json:"period"`
+}
+
+type eventScore struct {
+	MainScore *struct {
+		Home string `json:"homeScore"`
+		Away string `json:"awayScore"`
+	} `json:"mainScore"`
 }
 
 type participant struct {
@@ -120,12 +133,19 @@ type Suspended struct {
 	Moneyline bool `json:"moneyline"`
 }
 
+type Score struct {
+	Away string `json:"away"`
+	Home string `json:"home"`
+}
+
 type Row struct {
 	ID        string    `json:"id"`
 	Away      string    `json:"away"`
 	Home      string    `json:"home"`
 	Start     time.Time `json:"start,omitzero"` // zero if a rebuilt event lost its start time
 	Live      bool      `json:"live"`
+	Period    string    `json:"period,omitempty"`
+	Score     *Score    `json:"score,omitempty"`
 	Spread    Sides     `json:"spread"`
 	Total     OverUnder `json:"total"`
 	Moneyline Sides     `json:"moneyline"`
@@ -392,6 +412,9 @@ func (b *Board) rebuild(prev map[string]Row, at time.Time) (changed []string) {
 			b.skipped++
 			continue
 		}
+		if r.Live {
+			r.Period, r.Score = gameState(e)
+		}
 		if m, ok := kinds[id]["spread"]; ok {
 			r.Spread = Sides{Away: price(m, "Away"), Home: price(m, "Home")}
 			r.Suspended.Spread = isSuspended(m)
@@ -435,6 +458,16 @@ func marketTypeName(m market) string {
 		return ""
 	}
 	return m.MarketType.Name
+}
+
+func gameState(e event) (period string, score *Score) {
+	if e.LiveGameState != nil {
+		period = e.LiveGameState.Period
+	}
+	if s := e.EventScore; s != nil && s.MainScore != nil && s.MainScore.Home != "" && s.MainScore.Away != "" {
+		score = &Score{Away: s.MainScore.Away, Home: s.MainScore.Home}
+	}
+	return period, score
 }
 
 func isSuspended(m market) bool { return m.IsSuspended != nil && *m.IsSuspended }

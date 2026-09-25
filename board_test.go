@@ -56,9 +56,10 @@ func mustApply(t *testing.T, b *Board, f []byte) []string {
 	return changed
 }
 
-func withoutUpdatedAt(rows []Row) []Row {
+// asSnapshot drops what a snapshot can't hold: when a price moved, and the score, which only frames carry.
+func asSnapshot(rows []Row) []Row {
 	for i := range rows {
-		rows[i].UpdatedAt = time.Time{}
+		rows[i].UpdatedAt, rows[i].Score = time.Time{}, nil
 	}
 	return rows
 }
@@ -71,7 +72,7 @@ func TestReplay(t *testing.T) {
 			for _, f := range loadFrames(t, league) {
 				mustApply(t, b, f)
 			}
-			got, want := withoutUpdatedAt(b.Games()), loadBoard(t, league, "end").Games()
+			got, want := asSnapshot(b.Games()), loadBoard(t, league, "end").Games()
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("replay != end\ngot  %s\nwant %s", js(got), js(want))
 			}
@@ -250,6 +251,23 @@ func TestVenueRole(t *testing.T) {
 	changed := mustApply(t, b, []byte(f))
 	if _, ok := b.Row("34118180"); ok || !slices.Equal(changed, []string{"34118180"}) || b.Skipped() != 1 {
 		t.Fatalf("row kept %v, changed %v, skipped %d", ok, changed, b.Skipped())
+	}
+}
+
+// Real in-play frames from ATL @ GB, pre-game in the start fixture: GB 7-0, then 7-6 and 7-7.
+func TestScore(t *testing.T) {
+	const id = "34118180"
+	b := loadBoard(t, "nfl", "start")
+	if r, _ := b.Row(id); r.Score != nil || r.Period != "" {
+		t.Fatalf("pre-game score %+v period %q", r.Score, r.Period)
+	}
+	frames := loadFrames(t, "nfl-score")
+	for i, want := range []Score{{Away: "0", Home: "7"}, {Away: "6", Home: "7"}, {Away: "7", Home: "7"}} {
+		changed := mustApply(t, b, frames[i])
+		r, _ := b.Row(id)
+		if !slices.Equal(changed, []string{id}) || r.Score == nil || *r.Score != want || r.Period != "1st Quarter" {
+			t.Fatalf("frame %d: changed %v, score %+v, period %q", i, changed, r.Score, r.Period)
+		}
 	}
 }
 

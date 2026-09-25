@@ -8,6 +8,9 @@ These come from an earlier multi-book scraper, written in Python and polling RES
 - A wrong league or subcategory ID returns an empty payload or a 404, not an error. Check a new league's IDs against a capture that has games in it.
 - On a new host or region, check the event catalogue, not the status code. A Canada-but-not-Ontario exit returns 200 with a different catalogue.
 - Baseball: map `"Run Line"`, never `"Spread"`. DK also lists an in-play market called `Spread` at about 4.5 runs, and the shared `"Spread"` entry in `marketKinds` would pick it up. Make `marketKinds` per sport before adding a baseball league.
+- Scores: read `eventScore.mainScore.homeScore`/`awayScore`, which only socket frames carry. The
+  snapshot's `eventScorecard` labels teams first/second, and its order contradicted `eventScore` in an
+  NFL capture (2026-09-24).
 - Pregame MLB has one rung per market, and alternates only appear in-play. Capture in-play to test main-line filtering.
 
 ### FanDuel

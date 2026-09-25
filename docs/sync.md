@@ -45,8 +45,10 @@ How the feed keeps the board consistent with DK, decides what status to show, an
   - **Content check**: every remaining field and tombstone received before the cut matches the snapshot.
     Values are compared as the board reads them, since DK spells some differently in frames and
     snapshots: a missing `main` is true, a missing `isSuspended` is false, `tags` count only for
-    `MainPointLine`, and times compare in UTC. Replaying every captured frame and then committing
-    the later capture gives zero misses in all three leagues. A miss has
+    `MainPointLine`, and times compare in UTC. `eventScore` is skipped: snapshots never carry it, so
+    only the overlay applies it, and after a reconnect a game shows no score until a frame sends one.
+    Replaying every captured frame and then committing the later capture gives zero misses in all
+    three leagues. A miss has
     two possible causes we can't tell apart: the snapshot is older than `snapshotLag` allows, or it
     holds a newer value whose frame hasn't reached us yet. Either way: count it, stay unsynced, and
     let the next poll retry.

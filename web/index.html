@@ -51,7 +51,9 @@ td { padding: 6px 8px; white-space: nowrap; }
 tbody tr + tr td { border-top: 1px solid var(--line); }
 td.time { color: var(--muted); font-size: 12px; vertical-align: middle; }
 td.time.live { color: var(--stale); font-weight: 600; }
+td.time .period { display: block; font-weight: 400; color: var(--muted); }
 td.team { width: 100%; }
+td.team .pts { float: right; margin: 0 12px 0 8px; font-weight: 600; }
 td.price { text-align: right; }
 td.price .line { margin-right: 6px; }
 td.price .odds { color: var(--odds); }
@@ -71,7 +73,7 @@ td.price.down { animation: flash-down 2s; }
 #empty { color: var(--muted); }
 @media (max-width: 520px) {
   td, th { padding: 6px 4px; }
-  td.price .line { display: block; margin: 0; }
+  td.price .line { display: block; margin: 0 1em 0 0; }
   td.time, td.team { white-space: normal; }
 }
 </style>

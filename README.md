@@ -1,8 +1,8 @@
 # dk-nfl-live
 
 A live board of DraftKings Ontario's NFL mainline odds (spread, total, moneyline). Prices update
-as DraftKings pushes a change. When DK is slow, down or sends something unexpected, the page
-keeps the last good odds on screen and labels them stale.
+as DraftKings pushes a change, and games in progress show the score and quarter. When DK is slow,
+down or sends something unexpected, the page keeps the last good odds on screen and labels them stale.
 
 ## How to run locally
 
@@ -60,7 +60,8 @@ DK push WebSocket ── every price change, as it happens ───────
 - **Board (`board.go`)** keeps DK's events, markets and selections in memory and builds one row per
   game. Every frame and snapshot is validated as a whole or not at all. A bad one leaves
   the board untouched and triggers a resync. Since DK's snapshot can trail the socket, values the
-  socket delivered are laid over each snapshot so it never rolls a price back.
+  socket delivered are laid over each snapshot so it never rolls a price back. Scores come only
+  from socket frames (snapshots don't carry them) and are laid over snapshots the same way.
 - **Hub (`sse.go`)** encodes each change once and sends it to every browser. A new browser gets the
   full board, then patches. A browser that falls 32 messages behind is dropped and reconnects.
 - **Page (`web/`)** patches only the rows that changed. The status bar shows LIVE, Polling DK,

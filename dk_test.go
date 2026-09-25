@@ -142,6 +142,30 @@ func TestOverlay(t *testing.T) {
 	want(t, f, "+110", true)
 }
 
+// Snapshots never carry the score, so the current subscription's carries over them without counting
+// as a miss. A new subscription's snapshot shows none until the socket sends one.
+func TestScoreOverlay(t *testing.T) {
+	const id = "34118180"
+	f := syncedFeed(t)
+	f.onFrame(frameMsg{sub: f.sub, data: loadFrames(t, "nfl-score")[0], recv: sec(10)})
+	next, err := f.board.parseSnapshot(snapWith(t, "-108"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if misses := f.ev.check(next, sec(20)); slices.ContainsFunc(misses, func(m string) bool { return strings.HasSuffix(m, " eventScore") }) {
+		t.Fatalf("misses %v", misses)
+	}
+	commit(t, f, "-108", 28)
+	if r, _ := f.board.Row(id); r.Score == nil || *r.Score != (Score{Away: "0", Home: "7"}) {
+		t.Fatalf("after snapshot: score %+v", r.Score)
+	}
+	f.onAck(2, sec(30))
+	commit(t, f, "-108", 30)
+	if f.board.events[id].EventScore != nil {
+		t.Fatal("a dead subscription's score survived")
+	}
+}
+
 // The delay adds DK's internal time and half the socket round trip, never our clock against DK's.
 func TestDelay(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

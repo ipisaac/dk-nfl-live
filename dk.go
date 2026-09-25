@@ -947,6 +947,9 @@ func (es entries[T]) check(kind string, snap map[string]T, cut time.Time) (misse
 			continue
 		}
 		for name, at := range e.at {
+			if frameOnly[name] {
+				continue
+			}
 			if at.Before(cut) && (!held || !sameField(s, e.v, name)) {
 				misses = append(misses, kind+" "+id+" "+name)
 			}
@@ -954,6 +957,9 @@ func (es entries[T]) check(kind string, snap map[string]T, cut time.Time) (misse
 	}
 	return misses
 }
+
+// frameOnly fields never appear in a snapshot, so it can't confirm them; overlay still carries them.
+var frameOnly = map[string]bool{"eventScore": true}
 
 func sameField[T canonical[T]](a, b T, name string) bool {
 	va, vb := reflect.ValueOf(a.canon()), reflect.ValueOf(b.canon())

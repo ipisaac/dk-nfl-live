@@ -26,6 +26,11 @@ function kickoff(r) {
   return new Date(r.start).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function shortPeriod(p) {
+  const q = /^(\d)\w* Quarter$/.exec(p);
+  return q ? "Q" + q[1] : p;
+}
+
 function order(a, b) {
   return (Date.parse(a.start) || 0) - (Date.parse(b.start) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
@@ -88,13 +93,26 @@ function setPrice(td, r, old, market, side) {
   }
 }
 
+function setTeam(td, name, score) {
+  const pts = document.createElement("span");
+  pts.className = "pts";
+  pts.textContent = score ?? "";
+  td.replaceChildren(pts, name); // a float before the text stays on its first line
+}
+
 function fill(tb, r, old) {
   const [away, home] = tb.rows;
   const time = away.cells[0];
   time.textContent = kickoff(r);
+  if (r.live && r.period) {
+    const p = document.createElement("span");
+    p.className = "period";
+    p.textContent = shortPeriod(r.period);
+    time.append(p);
+  }
   time.classList.toggle("live", r.live);
-  away.cells[1].textContent = r.away;
-  home.cells[0].textContent = "@ " + r.home;
+  setTeam(away.cells[1], r.away, r.score?.away);
+  setTeam(home.cells[0], r.home, r.score?.home);
   MARKETS.forEach(([market, a, h], i) => {
     setPrice(away.cells[2 + i], r, old, market, a);
     setPrice(home.cells[1 + i], r, old, market, h);
