@@ -158,6 +158,8 @@ function onBoard(b) {
   for (const id of [...games.keys()]) if (!keep.has(id)) remove(id);
   for (const r of b.rows) upsert(r);
   for (const r of b.rows) table.appendChild(games.get(r.id).tb); // server order
+  const latest = Math.max(lastMove ?? 0, ...b.rows.map((r) => Date.parse(r.updatedAt) || 0));
+  if (latest) lastMove = new Date(latest);
   server = b.status;
 }
 
