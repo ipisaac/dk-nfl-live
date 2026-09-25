@@ -1,8 +1,7 @@
 # dk-nfl-live
 
-A live board of DraftKings Ontario's NFL mainline odds (spread, total, moneyline). Prices update
-as DraftKings pushes a change, and games in progress show the score and quarter. When DK is slow,
-down or sends something unexpected, the page keeps the last good odds on screen and labels them stale.
+A public web page showing DraftKings' current NFL main-line odds (moneyline, spread, total).
+It updates itself as lines move and survives DK being down or returning anything unexpected.
 
 ## How to run locally
 
@@ -23,7 +22,8 @@ Open <http://localhost:8080>. `PORT` is the only setting (default `8080`).
 If the board doesn't load, check `/healthz`. A `snapshotErr` with 403 means the snapshot request
 was refused; it does not identify whether the cause is the network, TLS or HTTP request. A healthy
 socket cannot bootstrap the board without a successful snapshot. From Render, DK's CDN (Akamai)
-accepts the snapshot only with Node's TLS ClientHello plus `br` in `Accept-Encoding`, which is why
+accepted the snapshot in the tested working configuration: Node's TLS ClientHello plus `br` in
+`Accept-Encoding`, which is why
 the snapshot client uses uTLS (`tlshello.go`).
 
 ```bash
@@ -32,9 +32,10 @@ go test -race ./...
 ```
 
 `-race` needs cgo (gcc on Windows); without it, run `go test ./...`. Tests use captured DK payloads
-in `testdata/` and never contact DK.
+in `testdata/` and never contact DK. The frontend tests need Node.js on `PATH`; without it, `go test`
+skips them.
 
-## Adding a league, sport or sportsbook
+## Adding a league, sport, or sportsbook
 
 The project ships an agent skill, [`extend-board`](.claude/skills/extend-board/SKILL.md).
 `AGENTS.md` points coding agents (Codex, Cursor, Claude Code and others) to it, so asking for the change directly (e.g. "add the CFL") is enough. Claude Code
@@ -60,7 +61,8 @@ DK push WebSocket ── every price change, as it happens ───────
 - **Board (`board.go`)** keeps DK's events, markets and selections in memory and builds one row per
   game. Every frame and snapshot is validated as a whole or not at all. A bad one leaves
   the board untouched and triggers a resync. Since DK's snapshot can trail the socket, values the
-  socket delivered are laid over each snapshot so it never rolls a price back. Scores come only
+  socket delivered are laid over each snapshot so it doesn't roll a price back, unless a resync
+  supersedes them (see `docs/sync.md`). Scores come only
   from socket frames (snapshots don't carry them) and are laid over snapshots the same way.
 - **Hub (`sse.go`)** encodes each change once and sends it to every browser. A new browser gets the
   full board, then patches. A browser that falls 32 messages behind is dropped and reconnects.
@@ -82,15 +84,14 @@ DK push WebSocket ── every price change, as it happens ───────
 - **Hosting on Render.** Fly.io Toronto (`yyz`) was the first choice, closest to DK's edge
   and Ontario viewers. Testing it on 2026-09-24 showed DK returns 403 to Fly for both the snapshot
   and the socket. The same image runs on Render Ohio instead, at a cost of roughly 5 ms end to end.
-  Render isn't blocked, but its snapshot requests pass Akamai only with a Node-like TLS handshake and
-  `br` offered.
+  Render isn't blocked; its snapshot requests passed Akamai in the tested working configuration, a
+  Node-like TLS handshake with `br` offered.
 
 ## How fresh are the odds?
 
 When the page says **LIVE**, most of a price's delay is inside DK: a median **41–220 ms** from DK
 creating a change to it leaving DK's socket. The network to us and on to you adds a few to ~20 ms,
-and our server's processing about 0.2 ms per frame. Writing the stream and the browser drawing the
-change aren't measured.
+and our server's processing about 0.2 ms per frame.
 
 Measured 2026-09-23 from Toronto, using DK's timestamps in captured frames and `/healthz`:
 
@@ -106,8 +107,8 @@ Measured 2026-09-23 from Toronto, using DK's timestamps in captured frames and `
 | 7 | Server → browser | a few ms to nearby viewers |
 | 8 | Browser updates one row | not measured (patches one row, no re-render) |
 
-- NFL figures come from only 14 pre-game frames; in-play NFL is still to be measured.
-- DK sends each side of a market separately, up to ~100 ms apart, so one side can briefly move first.
+- NFL figures come from only 14 pre-game frames.
+- DK sends each side of a market separately, up to ~100 ms apart, so one side can move first.
 - The status bar's "est. delay ~N ms" is the median of stages 1–3 and 5, plus half the round trips
   for stages 4 and 7. It leaves out stages 6 and 8 and uneven network paths, and never compares two
   clocks, so skew can't distort it.
