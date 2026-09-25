@@ -31,7 +31,7 @@ How the feed keeps the board consistent with DK, decides what status to show, an
   - a rejected frame, or a frame part skipped for an unknown ID: `resyncFrom` = its receive time.
 
   `snapshotLag` is the longest delay between a frame reaching our socket and a snapshot request
-  showing it. Step 2 measured a max of 4.2 s, so it is **8 s** (max + 2 s sampling + margin);
+  showing it. The capture measurements found a max of 4.2 s, so it is **8 s** (max + 2 s sampling + margin);
   re-check on NFL Sunday. A snapshot's **cut** is `requestStart −
   snapshotLag`: if `snapshotLag` holds, the snapshot reflects every frame received before it.
 - **Snapshot commit.** Build a new board from the snapshot → validate → drop superseded evidence →
@@ -62,11 +62,11 @@ How the feed keeps the board consistent with DK, decides what status to show, an
   - Why overlaying is safe: entries are the latest values of one subscription's ordered stream. The
     only possible regression is an update the snapshot already has and the socket hasn't delivered
     yet; it arrives on the same subscription and overwrites that field. This relies on DK delivering a
-    subscription's frames in order and without loss (step 2 checks the order; loss is caught by the
+    subscription's frames in order and without loss (the captures confirmed the order; loss is caught by the
     lost-frame rule).
-  - Overlaying requires frames that set absolute values. Step 2 confirmed it: `change` is an
+  - Overlaying requires frames that set absolute values. The captures confirmed it: `change` is an
     absolute-value field merge, which is why evidence is kept per field.
-  - DK has no per-entity versions or timestamps (step 2), so there is nothing better to compare than
+  - DK has no per-entity versions or timestamps (per the captures), so there is nothing better to compare than
     values.
 
   The snapshot clears the sync state only if the cut is at or after `resyncFrom` and the content

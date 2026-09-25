@@ -36,16 +36,15 @@ in `testdata/` and never contact DK.
 
 ## Adding a league, sport or sportsbook
 
-The project ships a Claude Code skill, [`extend-board`](.claude/skills/extend-board/SKILL.md). In
-Claude Code, run `/extend-board` or ask for the change directly (e.g. "add the CFL"). The skill
-loads automatically for these requests. It covers:
+The project ships an agent skill, [`extend-board`](.claude/skills/extend-board/SKILL.md).
+`AGENTS.md` points coding agents (Codex, Cursor, Claude Code and others) to it, so asking for the change directly (e.g. "add the CFL") is enough. Claude Code
+also loads it automatically and runs it as `/extend-board`. It covers:
 
 - which code is DK- or NFL-specific and which is generic (`Row`/`Status` → `Hub` → page),
 - capturing real DK payloads into `testdata/` before writing any code,
 - step-by-step recipes for **another league**, **a new sport** (three-way markets, events without
-  home/away) and **a second sportsbook**, each with the invariants from `AGENTS.md` it must keep.
-
-Without Claude Code, read the same file as a checklist.
+  home/away) and **a second sportsbook**, each with the invariants from `AGENTS.md` it must keep,
+- known gotchas per sportsbook, league and sport ([`gotchas.md`](.claude/skills/extend-board/gotchas.md)).
 
 ## How it works
 
@@ -78,20 +77,19 @@ DK push WebSocket ── every price change, as it happens ───────
   handshake matches Node's, which Akamai requires from Render.
 - **SSE to the browser.** Data flows one way. SSE is plain HTTP, and `EventSource` reconnects by
   itself with no client library.
-- **Memory only.** 32 games rebuild from DK in about a second after a restart.
-- **Plain HTML and JS.** It's one table; patching rows by ID needs no framework or build step.
-- **Hosting on Render (Ohio).** Fly.io Toronto (`yyz`) was the first choice, closest to DK's edge
+- **Plain HTML and JS.** One table patching rows by ID needs no framework or build step.
+- **Hosting on Render.** Fly.io Toronto (`yyz`) was the first choice, closest to DK's edge
   and Ontario viewers. Testing it on 2026-09-24 showed DK returns 403 to Fly for both the snapshot
-  and the socket (an IP block, since both work from a home connection). The same image runs on
-  Render Ohio instead, at a cost of roughly 5 ms end to end. Render isn't blocked, but its
-  snapshot requests pass Akamai only with a Node-like TLS handshake and `br` offered. It runs on
-  Render's free instance, which sleeps after 15 minutes without incoming requests; an uptime
-  monitor requests `/healthz` every 5 minutes to keep it awake.
+  and the socket. The same image runs on Render Ohio instead, at a cost of roughly 5 ms end to end.
+  Render isn't blocked, but its snapshot requests pass Akamai only with a Node-like TLS handshake and
+  `br` offered.
 
 ## How fresh are the odds?
 
-When the page says **LIVE**, a price typically reaches the screen **50–250 ms after DK creates the
-change**. Almost all of that is inside DK; this app adds under 1 ms.
+When the page says **LIVE**, most of a price's delay is inside DK: a median **41–220 ms** from DK
+creating a change to it leaving DK's socket. The network to us and on to you adds a few to ~20 ms,
+and our server's processing about 0.2 ms per frame. Writing the stream and the browser drawing the
+change aren't measured.
 
 Measured 2026-09-23 from Toronto, using DK's timestamps in captured frames and `/healthz`:
 
@@ -102,15 +100,16 @@ Measured 2026-09-23 from Toronto, using DK's timestamps in captured frames and `
 | 3 | DK: `publishedTime` → WebSocket publish | p50 24–30 ms · p95 38–113 ms |
 | | **Inside DK (1–3)** | **p50 41–220 ms · p95 88–950 ms** (NFL pre-game 48 / 690 ms) |
 | 4 | DK socket → our server | ~5–20 ms (estimated from round trips; clock skew hides one-way time) |
-| 5 | Decode, apply, diff, encode the patch | ~0.18 ms (benchmark, 32-game board) |
-| 6 | Hub → browser connections | µs (non-blocking queue, immediate flush) |
+| 5 | Decode, apply, diff, encode the patch | ~0.19 ms per frame (`BenchmarkFrame`, NFL fixture, 32 games, desktop CPU) |
+| 6 | Hub → browser connections | not measured (non-blocking queue, immediate flush) |
 | 7 | Server → browser | a few ms to nearby viewers |
-| 8 | Browser updates one row | < 1 ms |
+| 8 | Browser updates one row | not measured (patches one row, no re-render) |
 
 - NFL figures come from only 14 pre-game frames; in-play NFL is still to be measured.
 - DK sends each side of a market separately, up to ~100 ms apart, so one side can briefly move first.
-- The status bar's "est. typical delay ~N ms" is the median of stages 1–3 plus half the round trips
-  for stages 4 and 7, plus stage 5. It never compares two clocks, so skew can't distort it.
+- The status bar's "est. delay ~N ms" is the median of stages 1–3 and 5, plus half the round trips
+  for stages 4 and 7. It leaves out stages 6 and 8 and uneven network paths, and never compares two
+  clocks, so skew can't distort it.
 
 When the page is not LIVE:
 

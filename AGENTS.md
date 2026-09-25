@@ -52,6 +52,7 @@ It updates itself as lines move and survives DK being down or returning anything
 - Time-dependent tests use `testing/synctest` over in-memory connections (`net.Pipe`), never real
   sockets or sleeps. Real-socket tests are separate integration tests with no timing assertions.
 - Probe from the affected host before claiming DK is unrecheable.
+- To add a league, sport or sportsbook, follow `.claude/skills/extend-board/SKILL.md`.
 - Only the user performs account logins, billing, account creation, and pushing to git hosts.
 - Keep comments minimal and purposeful. Do not add comments that restate what the code does.
 - Prefer self-explanatory code, clear variable names, and small functions over comments.

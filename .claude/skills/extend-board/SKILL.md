@@ -7,6 +7,8 @@ description: Use when adding a second league, a new sport, or a second sportsboo
 
 `AGENTS.md` (loaded through `CLAUDE.md`) applies to every new feed, not just DK's. Where a recipe here conflicts with it, `AGENTS.md` wins. Change it first, and with the user's agreement.
 
+Before starting, read the section of `gotchas.md` for the book, league or sport you're adding.
+
 ## What is specific and what is generic
 
 | Layer | File | Specific to |

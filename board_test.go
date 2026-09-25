@@ -16,7 +16,7 @@ var fixtureSubcategory = map[string]string{"nfl": "4518", "mlb": "4519", "npb": 
 
 var at = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-func loadBoard(t *testing.T, league, which string) *Board {
+func loadBoard(t testing.TB, league, which string) *Board {
 	t.Helper()
 	body, err := os.ReadFile("testdata/" + league + "-" + which + ".json")
 	if err != nil {
@@ -30,7 +30,7 @@ func loadBoard(t *testing.T, league, which string) *Board {
 }
 
 // loadFrames returns each captured message's `data`, the input to ApplyUpdate.
-func loadFrames(t *testing.T, league string) [][]byte {
+func loadFrames(t testing.TB, league string) [][]byte {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/" + league + "-frames.jsonl")
 	if err != nil {
@@ -279,5 +279,36 @@ func TestUnknownID(t *testing.T) {
 	}
 	if r, _ := b.Row("34118180"); !r.Live {
 		t.Fatal("the known part wasn't applied")
+	}
+}
+
+// Stage 5 of README's latency table: decode and apply one frame, then encode its SSE patch.
+func BenchmarkFrame(b *testing.B) {
+	for league := range fixtureSubcategory {
+		b.Run(league, func(b *testing.B) {
+			frames := loadFrames(b, league)
+			var applied int
+			for b.Loop() {
+				b.StopTimer()
+				board := loadBoard(b, league, "start")
+				b.StartTimer()
+				for _, f := range frames {
+					changed, _, err := board.ApplyUpdate(f, at)
+					if err != nil {
+						b.Fatal(err)
+					}
+					var rows []Row
+					for _, id := range changed {
+						if r, ok := board.Row(id); ok {
+							rows = append(rows, r)
+						}
+					}
+					sseFrame("patch", patchEvent{Rows: rows})
+					applied++
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Microseconds())/float64(applied), "µs/frame")
+			b.ReportMetric(float64(len(loadBoard(b, league, "start").Games())), "games")
+		})
 	}
 }
